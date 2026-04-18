@@ -20,7 +20,7 @@
  * that is both enabled and disabled ends up excluded.
  */
 
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 export interface ToolDef {
   name: string;
@@ -56,43 +56,9 @@ export class ToolFilter {
    * env-var overrides. Throws if the config file is missing or invalid JSON.
    */
   static load(env: NodeJS.ProcessEnv = process.env): ToolFilter {
-    const config: ToolFilterConfig = {};
-    const configPath = env.GODOT_MCP_CONFIG;
-    if (configPath) {
-      if (!existsSync(configPath)) {
-        throw new Error(`GODOT_MCP_CONFIG file not found: ${configPath}`);
-      }
-      let raw: string;
-      try {
-        raw = readFileSync(configPath, 'utf8');
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        throw new Error(`Failed to read GODOT_MCP_CONFIG (${configPath}): ${msg}`);
-      }
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(raw);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        throw new Error(`GODOT_MCP_CONFIG is not valid JSON (${configPath}): ${msg}`);
-      }
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        throw new Error(`GODOT_MCP_CONFIG must be a JSON object (${configPath})`);
-      }
-      const obj = parsed as Record<string, unknown>;
-      const assignList = (key: keyof ToolFilterConfig) => {
-        const v = obj[key];
-        if (v === undefined) return;
-        if (!Array.isArray(v) || !v.every((x) => typeof x === 'string')) {
-          throw new Error(`GODOT_MCP_CONFIG: field '${key}' must be an array of strings`);
-        }
-        config[key] = v as string[];
-      };
-      assignList('enabledTools');
-      assignList('disabledTools');
-      assignList('enabledTags');
-      assignList('disabledTags');
-    }
+    const config: ToolFilterConfig = env.GODOT_MCP_CONFIG
+      ? loadConfigFile(env.GODOT_MCP_CONFIG)
+      : {};
 
     const envEnabledTools = parseList(env.GODOT_MCP_ENABLED_TOOLS);
     const envDisabledTools = parseList(env.GODOT_MCP_DISABLED_TOOLS);
@@ -148,6 +114,65 @@ export class ToolFilter {
     if (tags.some((t) => this.disabledTags.has(t))) return false;
     return true;
   }
+}
+
+const CONFIG_FIELDS: Array<keyof ToolFilterConfig> = [
+  'enabledTools',
+  'disabledTools',
+  'enabledTags',
+  'disabledTags',
+];
+
+function loadConfigFile(configPath: string): ToolFilterConfig {
+  if (!existsSync(configPath)) {
+    throw new Error(`GODOT_MCP_CONFIG file not found: ${configPath}`);
+  }
+  const raw = readConfigFile(configPath);
+  const parsed = parseConfigFile(configPath, raw);
+  const config: ToolFilterConfig = {};
+  for (const key of CONFIG_FIELDS) {
+    const list = coerceStringArray(parsed[key], key);
+    if (list) config[key] = list;
+  }
+  return config;
+}
+
+function readConfigFile(configPath: string): string {
+  try {
+    return readFileSync(configPath, 'utf8');
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`Failed to read GODOT_MCP_CONFIG (${configPath}): ${msg}`);
+  }
+}
+
+function parseConfigFile(configPath: string, raw: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`GODOT_MCP_CONFIG is not valid JSON (${configPath}): ${msg}`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`GODOT_MCP_CONFIG must be a JSON object (${configPath})`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === 'string');
+}
+
+function coerceStringArray(
+  value: unknown,
+  field: keyof ToolFilterConfig
+): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!isStringArray(value)) {
+    throw new Error(`GODOT_MCP_CONFIG: field '${field}' must be an array of strings`);
+  }
+  return value;
 }
 
 // Empty / whitespace-only env vars are treated the same as unset so a stray

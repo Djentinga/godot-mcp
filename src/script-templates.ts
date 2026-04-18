@@ -5,7 +5,7 @@
  * (the tool handler selects based on the target file extension).
  */
 
-import { basename } from 'path';
+import { basename } from 'node:path';
 
 export interface GdScriptTemplateArgs {
   baseClass?: string;
@@ -78,7 +78,7 @@ function renderCSharpMethod(name: string): string {
 }
 
 function normalizeLifecycleKey(name: string): string {
-  return '_' + name.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return '_' + name.toLowerCase().replaceAll(/[^a-z\d]/g, '');
 }
 
 function capitalize(s: string): string {
@@ -99,7 +99,7 @@ function sanitizeCSharpIdentifier(s: string): string {
   const pascal = toPascalCase(s);
   if (pascal.length === 0) return 'Script';
   // C# identifiers can't start with a digit.
-  return /^[0-9]/.test(pascal) ? '_' + pascal : pascal;
+  return /^\d/.test(pascal) ? '_' + pascal : pascal;
 }
 
 function indentLines(text: string, spaces: number): string {

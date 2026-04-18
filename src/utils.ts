@@ -3,7 +3,7 @@
  * Pure functions extracted for testability.
  */
 
-import { join } from 'path';
+import { join } from 'node:path';
 
 export interface OperationParams {
   [key: string]: any;
@@ -243,8 +243,8 @@ export function isGodot44OrLater(version: string): boolean {
  */
 export function toWslProjectPath(p: string): string {
   if (!p || process.platform !== 'linux') return p;
-  const m = p.match(/^([A-Za-z]):[\\/](.*)$/);
-  return m ? `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}` : p;
+  const m = /^([A-Za-z]):[\\/](.*)$/.exec(p);
+  return m ? `/mnt/${m[1].toLowerCase()}/${m[2].replaceAll('\\', '/')}` : p;
 }
 
 /**
@@ -254,7 +254,7 @@ export function toWslProjectPath(p: string): string {
  */
 export function toNativeProjectPath(p: string): string {
   if (!p || process.platform !== 'linux') return p;
-  const m = p.match(/^\/mnt\/([a-z])\/(.*)$/i);
+  const m = /^\/mnt\/([a-z])\/(.*)$/i.exec(p);
   return m ? `${m[1].toUpperCase()}:/${m[2]}` : p;
 }
 
@@ -315,7 +315,7 @@ export function parseGodotIni(content: string): Record<string, Record<string, st
     }
 
     // Section header
-    const sectionMatch = trimmed.match(/^\[(.+)\]$/);
+    const sectionMatch = /^\[(.+)\]$/.exec(trimmed);
     if (sectionMatch) {
       currentSection = sectionMatch[1];
       if (!sections[currentSection]) sections[currentSection] = {};
@@ -326,7 +326,7 @@ export function parseGodotIni(content: string): Record<string, Record<string, st
     // Key=value pair, possibly spanning multiple lines. String state carries
     // across lines so a literal that opens on one line and closes on a later
     // line doesn't confuse depth tracking.
-    const kvMatch = trimmed.match(/^([^=]+)=(.*)$/);
+    const kvMatch = /^([^=]+)=(.*)$/.exec(trimmed);
     if (kvMatch && currentSection) {
       const key = kvMatch[1].trim();
       const walker = { depth: 0, inString: false };
@@ -387,12 +387,12 @@ export function toWindowsAccessiblePath(
   if (!p || !isWindowsGodotExe(godotPath) || process.platform !== 'linux') return p;
   // Already a Windows UNC path (\\server\share\…). Leave alone so we don't
   // stack a second UNC prefix.
-  if (/^\\\\/.test(p) || /^\/\//.test(p)) return p;
+  if (p.startsWith('\\\\') || p.startsWith('//')) return p;
   // Windows drive form — accept "C:", "C:/…", "C:\…", and drive-relative
   // "C:foo". Anything with a drive letter is already native; pass through.
   if (/^[A-Za-z]:/.test(p)) return p;
   // /mnt/<letter>/... → <Letter>:/...
-  const mnt = p.match(/^\/mnt\/([a-z])(?:\/(.*))?$/i);
+  const mnt = /^\/mnt\/([a-z])(?:\/(.*))?$/i.exec(p);
   if (mnt) return `${mnt[1].toUpperCase()}:/${mnt[2] ?? ''}`;
   // Only rewrite absolute linux paths. Relative paths (no leading slash) are
   // left alone — callers that build an absolute path for Godot should do so
@@ -400,5 +400,5 @@ export function toWindowsAccessiblePath(
   if (!p.startsWith('/')) return p;
   // Linux-native absolute path → WSL UNC (backslash-separated for Windows).
   const distro = process.env.WSL_DISTRO_NAME || 'Ubuntu';
-  return `\\\\wsl.localhost\\${distro}\\${p.replace(/^\//, '').replace(/\//g, '\\')}`;
+  return `\\\\wsl.localhost\\${distro}\\${p.slice(1).replaceAll('/', '\\')}`;
 }

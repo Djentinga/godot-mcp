@@ -250,7 +250,7 @@ describe('WSL path translation', () => {
     });
 
     it('toWslProjectPath converts Windows backslashes too', () => {
-      expect(toWslProjectPath('C:\\Users\\me\\game')).toBe('/mnt/c/Users/me/game');
+      expect(toWslProjectPath(String.raw`C:\Users\me\game`)).toBe('/mnt/c/Users/me/game');
     });
 
     it('toWslProjectPath passes /mnt/ paths through', () => {
@@ -385,7 +385,7 @@ describe('toWindowsAccessiblePath', () => {
   it('converts /home/... to WSL UNC form for Godot.exe', () => {
     process.env.WSL_DISTRO_NAME = 'Ubuntu';
     expect(toWindowsAccessiblePath('/home/me/script.gd', 'C:/Godot/Godot.exe')).toBe(
-      '\\\\wsl.localhost\\Ubuntu\\home\\me\\script.gd'
+      String.raw`\\wsl.localhost\Ubuntu\home\me\script.gd`
     );
   });
 
@@ -422,9 +422,8 @@ describe('toWindowsAccessiblePath', () => {
   });
 
   it('passes an already-UNC path through unchanged', () => {
-    expect(
-      toWindowsAccessiblePath('\\\\wsl.localhost\\Ubuntu\\home\\me', 'C:/Godot/Godot.exe')
-    ).toBe('\\\\wsl.localhost\\Ubuntu\\home\\me');
+    const unc = String.raw`\\wsl.localhost\Ubuntu\home\me`;
+    expect(toWindowsAccessiblePath(unc, 'C:/Godot/Godot.exe')).toBe(unc);
   });
 
   it('passes a bare drive letter through unchanged', () => {

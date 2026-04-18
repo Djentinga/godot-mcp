@@ -94,7 +94,7 @@ class GodotServer {
   private interactionScriptPath: string;
   private validatedPaths: Map<string, boolean> = new Map();
   private strictPathValidation: boolean = false;
-  private toolFilter: ToolFilter;
+  private readonly toolFilter: ToolFilter;
   private gameConnection: GameConnection = {
     socket: null,
     connected: false,
@@ -4583,7 +4583,7 @@ class GodotServer {
         };
       }
     }
-    const uidMatch = stdout.match(/uid:\/\/[a-z0-9]+/i);
+    const uidMatch = /uid:\/\/[a-z\d]+/i.exec(stdout);
     return uidMatch ? uidMatch[0] : null;
   }
 
@@ -6892,36 +6892,39 @@ class GodotServer {
 function extractTrailingJson(blob: string): any {
   const start = blob.indexOf('{');
   if (start === -1) return null;
+  const end = findMatchingBrace(blob, start);
+  if (end === -1) return null;
+  try {
+    return JSON.parse(blob.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
+// Return the index of the `}` that closes the `{` at `start`, or -1 if the
+// blob ends mid-object. Skips characters that live inside string literals.
+function findMatchingBrace(blob: string, start: number): number {
   let depth = 0;
   let inString = false;
   for (let i = start; i < blob.length; i++) {
     const ch = blob[i];
     if (inString) {
       if (ch === '\\') {
-        // Skip the escaped character.
-        i++;
-        continue;
+        i++; // skip the escaped character
+      } else if (ch === '"') {
+        inString = false;
       }
-      if (ch === '"') inString = false;
       continue;
     }
     if (ch === '"') {
       inString = true;
-      continue;
-    }
-    if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) {
-        try {
-          return JSON.parse(blob.slice(start, i + 1));
-        } catch {
-          return null;
-        }
-      }
+    } else if (ch === '{') {
+      depth++;
+    } else if (ch === '}' && --depth === 0) {
+      return i;
     }
   }
-  return null;
+  return -1;
 }
 
 // Create and run the server
