@@ -36,7 +36,7 @@ describe('buildCSharpScriptTemplate', () => {
 
   it('derives the class name from the file basename when none is given', () => {
     const out = buildCSharpScriptTemplate({ scriptPath: 'scripts/enemy_ai.cs', methods: [] });
-    expect(out).toContain('public partial class Enemy_ai : Node');
+    expect(out).toContain('public partial class EnemyAi : Node');
   });
 
   it('uses the explicit className when provided', () => {
@@ -87,12 +87,12 @@ describe('buildCSharpScriptTemplate', () => {
 
   it('sanitizes invalid characters in file-derived class names', () => {
     const out = buildCSharpScriptTemplate({ scriptPath: 'weird-name!.cs', methods: [] });
-    expect(out).toContain('public partial class Weird_name_ : Node');
+    expect(out).toContain('public partial class WeirdName : Node');
   });
 
   it('prefixes an underscore when the filename starts with a digit', () => {
     const out = buildCSharpScriptTemplate({ scriptPath: '2d-controller.cs', methods: [] });
-    expect(out).toContain('public partial class _2d_controller : Node');
+    expect(out).toContain('public partial class _2dController : Node');
   });
 
   it('indents method bodies four spaces', () => {
@@ -102,5 +102,48 @@ describe('buildCSharpScriptTemplate', () => {
     });
     expect(out).toContain('    public override void _Ready()');
     expect(out).toContain('    {\n    }');
+  });
+
+  it('renders the rest of Godot 4 lifecycle overrides', () => {
+    const out = buildCSharpScriptTemplate({
+      scriptPath: 'P.cs',
+      methods: [
+        '_unhandled_key_input',
+        '_shortcut_input',
+        '_gui_input',
+        '_notification',
+        '_integrate_forces',
+        '_get',
+        '_set',
+        '_get_property_list',
+        '_draw',
+      ],
+    });
+    expect(out).toContain('public override void _UnhandledKeyInput(InputEvent @event)');
+    expect(out).toContain('public override void _ShortcutInput(InputEvent @event)');
+    expect(out).toContain('public override void _GuiInput(InputEvent @event)');
+    expect(out).toContain('public override void _Notification(int what)');
+    expect(out).toContain('public override void _IntegrateForces(PhysicsDirectBodyState3D state)');
+    expect(out).toContain('public override void _Get(StringName property)');
+    expect(out).toContain('public override void _Set(StringName property, Variant value)');
+    expect(out).toContain('public override void _GetPropertyList()');
+    expect(out).toContain('public override void _Draw()');
+  });
+
+  it('converts snake_case custom methods to PascalCase across all segments', () => {
+    const out = buildCSharpScriptTemplate({
+      scriptPath: 'P.cs',
+      methods: ['take_damage', 'spawn_effect_at_point'],
+    });
+    expect(out).toContain('public void TakeDamage()');
+    expect(out).toContain('public void SpawnEffectAtPoint()');
+  });
+
+  it('preserves the leading underscore on non-lifecycle "_"-prefixed methods', () => {
+    const out = buildCSharpScriptTemplate({
+      scriptPath: 'P.cs',
+      methods: ['_private_helper'],
+    });
+    expect(out).toContain('public void _PrivateHelper()');
   });
 });

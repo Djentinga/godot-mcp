@@ -243,7 +243,7 @@ describe('ToolFilter', () => {
       );
     });
 
-    it('treats empty env-var as an empty list, clearing the file field', () => {
+    it('treats an empty env-var as unset so it does not wipe a JSON-configured field', () => {
       const path = join(tmpDir, 'config.json');
       writeFileSync(path, JSON.stringify({ disabledTools: ['game_eval'] }));
       const filter = ToolFilter.load({
@@ -251,7 +251,19 @@ describe('ToolFilter', () => {
         GODOT_MCP_DISABLED_TOOLS: '',
       });
       const out = filter.filter(TOOLS);
-      expect(names(out)).toContain('game_eval');
+      // Empty string is treated as unset, so the JSON denylist still applies.
+      expect(names(out)).not.toContain('game_eval');
+    });
+
+    it('treats a whitespace-only env-var as unset', () => {
+      const path = join(tmpDir, 'config.json');
+      writeFileSync(path, JSON.stringify({ disabledTools: ['game_eval'] }));
+      const filter = ToolFilter.load({
+        GODOT_MCP_CONFIG: path,
+        GODOT_MCP_DISABLED_TOOLS: '  ,  , ',
+      });
+      const out = filter.filter(TOOLS);
+      expect(names(out)).not.toContain('game_eval');
     });
   });
 });

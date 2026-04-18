@@ -18,21 +18,26 @@ export interface CSharpScriptTemplateArgs extends GdScriptTemplateArgs {
 }
 
 // Godot 4 C# lifecycle methods. When a requested method name normalizes to one
-// of these, we emit an `override` with the documented signature.
+// of these, we emit an `override` with the documented signature. Keys are the
+// method name lowercased and stripped of underscores so both snake_case and
+// camelCase requests land on the same entry.
 const CSHARP_LIFECYCLE_OVERRIDES: Record<string, { pascal: string; signature: string }> = {
   _ready: { pascal: '_Ready', signature: '' },
   _process: { pascal: '_Process', signature: 'double delta' },
   _physicsprocess: { pascal: '_PhysicsProcess', signature: 'double delta' },
-  _physics_process: { pascal: '_PhysicsProcess', signature: 'double delta' },
   _input: { pascal: '_Input', signature: 'InputEvent @event' },
   _unhandledinput: { pascal: '_UnhandledInput', signature: 'InputEvent @event' },
-  _unhandled_input: { pascal: '_UnhandledInput', signature: 'InputEvent @event' },
+  _unhandledkeyinput: { pascal: '_UnhandledKeyInput', signature: 'InputEvent @event' },
+  _shortcutinput: { pascal: '_ShortcutInput', signature: 'InputEvent @event' },
+  _guiinput: { pascal: '_GuiInput', signature: 'InputEvent @event' },
   _entertree: { pascal: '_EnterTree', signature: '' },
-  _enter_tree: { pascal: '_EnterTree', signature: '' },
   _exittree: { pascal: '_ExitTree', signature: '' },
-  _exit_tree: { pascal: '_ExitTree', signature: '' },
   _notification: { pascal: '_Notification', signature: 'int what' },
   _draw: { pascal: '_Draw', signature: '' },
+  _integrateforces: { pascal: '_IntegrateForces', signature: 'PhysicsDirectBodyState3D state' },
+  _get: { pascal: '_Get', signature: 'StringName property' },
+  _set: { pascal: '_Set', signature: 'StringName property, Variant value' },
+  _getpropertylist: { pascal: '_GetPropertyList', signature: '' },
 };
 
 export function buildGdScriptTemplate(a: GdScriptTemplateArgs): string {
@@ -62,26 +67,39 @@ export function buildCSharpScriptTemplate(a: CSharpScriptTemplateArgs): string {
 }
 
 function renderCSharpMethod(name: string): string {
-  const key = name.toLowerCase();
+  const key = normalizeLifecycleKey(name);
   const override = CSHARP_LIFECYCLE_OVERRIDES[key];
   if (override) {
     return `public override void ${override.pascal}(${override.signature})\n{\n}`;
   }
-  const normalized = name.startsWith('_')
-    ? '_' + capitalize(name.slice(1))
-    : capitalize(name);
-  return `public void ${normalized}()\n{\n}`;
+  const leading = name.startsWith('_') ? '_' : '';
+  const rest = name.replace(/^_+/, '');
+  return `public void ${leading}${toPascalCase(rest)}()\n{\n}`;
+}
+
+function normalizeLifecycleKey(name: string): string {
+  return '_' + name.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 function capitalize(s: string): string {
   return s.length === 0 ? s : s[0].toUpperCase() + s.slice(1);
 }
 
+// Convert snake_case / kebab-case / mixed input to PascalCase, preserving any
+// embedded digit runs. Empty input yields empty.
+function toPascalCase(s: string): string {
+  return s
+    .split(/[^A-Za-z0-9]+/)
+    .filter((seg) => seg.length > 0)
+    .map(capitalize)
+    .join('');
+}
+
 function sanitizeCSharpIdentifier(s: string): string {
-  let cleaned = s.replace(/[^A-Za-z0-9_]/g, '_');
-  if (/^[0-9]/.test(cleaned)) cleaned = '_' + cleaned;
-  if (cleaned.length === 0) cleaned = 'Script';
-  return capitalize(cleaned);
+  const pascal = toPascalCase(s);
+  if (pascal.length === 0) return 'Script';
+  // C# identifiers can't start with a digit.
+  return /^[0-9]/.test(pascal) ? '_' + pascal : pascal;
 }
 
 function indentLines(text: string, spaces: number): string {

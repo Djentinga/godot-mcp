@@ -922,8 +922,11 @@ func _get_uid_inline(res_path: String) -> String:
         return ""
     var head := f.get_buffer(2048).get_string_from_utf8()
     f.close()
+    # Accept quoting variations Godot has used across 4.x: uid="uid://…",
+    # uid='uid://…', and rare unquoted forms. Whitespace around = is also
+    # tolerated in case a future writer reformats the header.
     var rx := RegEx.new()
-    rx.compile('uid="(uid://[a-z0-9]+)"')
+    rx.compile('uid\\s*=\\s*["\']?(uid://[a-z0-9]+)')
     var m := rx.search(head)
     return m.get_string(1) if m else ""
 

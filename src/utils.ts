@@ -268,12 +268,19 @@ export function isWindowsGodotExe(godotPath: string | null | undefined): boolean
 }
 
 /**
- * Join a project directory with "project.godot", translating Windows-style
- * paths to the WSL mount form first so fs.existsSync can resolve them when
- * running on linux.
+ * Join a project directory with a relative path, translating Windows-style
+ * inputs to the WSL mount form first so Node's fs layer can resolve them on
+ * linux. Use for every filesystem access that combines a user-supplied
+ * project path with a known relative path — project.godot, Dockerfile, a
+ * script under the project, etc.
  */
+export function projectFilePath(projectPath: string, ...parts: string[]): string {
+  return join(toWslProjectPath(projectPath), ...parts);
+}
+
+/** Backwards-compat alias pinned to project.godot. */
 export function projectGodotFile(projectPath: string): string {
-  return join(toWslProjectPath(projectPath), 'project.godot');
+  return projectFilePath(projectPath, 'project.godot');
 }
 
 /**
@@ -316,16 +323,19 @@ export function parseGodotIni(content: string): Record<string, Record<string, st
       continue;
     }
 
-    // Key=value pair, possibly spanning multiple lines.
+    // Key=value pair, possibly spanning multiple lines. String state carries
+    // across lines so a literal that opens on one line and closes on a later
+    // line doesn't confuse depth tracking.
     const kvMatch = trimmed.match(/^([^=]+)=(.*)$/);
     if (kvMatch && currentSection) {
       const key = kvMatch[1].trim();
+      const walker = { depth: 0, inString: false };
       let value = kvMatch[2];
-      let depth = countIniDepth(value);
+      stepIniDepth(value, walker);
       i++;
-      while (depth > 0 && i < lines.length) {
+      while (walker.depth > 0 && i < lines.length) {
         value += '\n' + lines[i];
-        depth += countIniDepth(lines[i]);
+        stepIniDepth(lines[i], walker);
         i++;
       }
       sections[currentSection][key] = value.trim();
@@ -337,24 +347,26 @@ export function parseGodotIni(content: string): Record<string, Record<string, st
   return sections;
 }
 
-function countIniDepth(text: string): number {
-  let depth = 0;
-  let inString = false;
+interface IniDepthWalker {
+  depth: number;
+  inString: boolean;
+}
+
+function stepIniDepth(text: string, w: IniDepthWalker): void {
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
-    if (ch === '\\' && inString) {
+    if (ch === '\\' && w.inString && i + 1 < text.length) {
       i++;
       continue;
     }
     if (ch === '"') {
-      inString = !inString;
+      w.inString = !w.inString;
       continue;
     }
-    if (inString) continue;
-    if (ch === '{' || ch === '[') depth++;
-    else if (ch === '}' || ch === ']') depth--;
+    if (w.inString) continue;
+    if (ch === '{' || ch === '[') w.depth++;
+    else if (ch === '}' || ch === ']') w.depth--;
   }
-  return depth;
 }
 
 /**
@@ -373,12 +385,20 @@ export function toWindowsAccessiblePath(
   godotPath: string | null | undefined
 ): string {
   if (!p || !isWindowsGodotExe(godotPath) || process.platform !== 'linux') return p;
-  // Already Windows-native
-  if (/^[A-Za-z]:[\\/]/.test(p)) return p;
+  // Already a Windows UNC path (\\server\share\…). Leave alone so we don't
+  // stack a second UNC prefix.
+  if (/^\\\\/.test(p) || /^\/\//.test(p)) return p;
+  // Windows drive form — accept "C:", "C:/…", "C:\…", and drive-relative
+  // "C:foo". Anything with a drive letter is already native; pass through.
+  if (/^[A-Za-z]:/.test(p)) return p;
   // /mnt/<letter>/... → <Letter>:/...
-  const mnt = p.match(/^\/mnt\/([a-z])\/(.*)$/i);
-  if (mnt) return `${mnt[1].toUpperCase()}:/${mnt[2]}`;
-  // Linux-native path → WSL UNC (backslash-separated for Windows).
+  const mnt = p.match(/^\/mnt\/([a-z])(?:\/(.*))?$/i);
+  if (mnt) return `${mnt[1].toUpperCase()}:/${mnt[2] ?? ''}`;
+  // Only rewrite absolute linux paths. Relative paths (no leading slash) are
+  // left alone — callers that build an absolute path for Godot should do so
+  // before calling us.
+  if (!p.startsWith('/')) return p;
+  // Linux-native absolute path → WSL UNC (backslash-separated for Windows).
   const distro = process.env.WSL_DISTRO_NAME || 'Ubuntu';
   return `\\\\wsl.localhost\\${distro}\\${p.replace(/^\//, '').replace(/\//g, '\\')}`;
 }

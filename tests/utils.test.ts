@@ -11,6 +11,7 @@ import {
   toNativeProjectPath,
   isWindowsGodotExe,
   projectGodotFile,
+  projectFilePath,
   toWindowsAccessiblePath,
   parseGodotIni,
 } from '../src/utils.js';
@@ -337,6 +338,26 @@ describe('projectGodotFile', () => {
   });
 });
 
+describe('projectFilePath', () => {
+  const origPlatform = process.platform;
+  const setPlatform = (p: NodeJS.Platform) => {
+    Object.defineProperty(process, 'platform', { value: p, configurable: true });
+  };
+  afterEach(() => setPlatform(origPlatform));
+
+  it('translates Windows-style paths on linux', () => {
+    setPlatform('linux');
+    expect(projectFilePath('C:/game', 'Dockerfile')).toBe('/mnt/c/game/Dockerfile');
+  });
+
+  it('passes linux-native paths through', () => {
+    setPlatform('linux');
+    expect(projectFilePath('/home/me/game', 'addons', 'x')).toBe(
+      '/home/me/game/addons/x'
+    );
+  });
+});
+
 describe('toWindowsAccessiblePath', () => {
   const origPlatform = process.platform;
   const origDistro = process.env.WSL_DISTRO_NAME;
@@ -398,6 +419,32 @@ describe('toWindowsAccessiblePath', () => {
   it('returns the input unchanged when path or godotPath is empty', () => {
     expect(toWindowsAccessiblePath('', 'C:/Godot/Godot.exe')).toBe('');
     expect(toWindowsAccessiblePath('/home/me/x.gd', null)).toBe('/home/me/x.gd');
+  });
+
+  it('passes an already-UNC path through unchanged', () => {
+    expect(
+      toWindowsAccessiblePath('\\\\wsl.localhost\\Ubuntu\\home\\me', 'C:/Godot/Godot.exe')
+    ).toBe('\\\\wsl.localhost\\Ubuntu\\home\\me');
+  });
+
+  it('passes a bare drive letter through unchanged', () => {
+    expect(toWindowsAccessiblePath('C:', 'C:/Godot/Godot.exe')).toBe('C:');
+  });
+
+  it('passes a drive-relative path through unchanged', () => {
+    expect(toWindowsAccessiblePath('C:project.godot', 'C:/Godot/Godot.exe')).toBe(
+      'C:project.godot'
+    );
+  });
+
+  it('handles /mnt/c with no subpath', () => {
+    expect(toWindowsAccessiblePath('/mnt/c', 'C:/Godot/Godot.exe')).toBe('C:/');
+  });
+
+  it('leaves relative linux-style paths alone', () => {
+    expect(toWindowsAccessiblePath('scripts/x.gd', 'C:/Godot/Godot.exe')).toBe(
+      'scripts/x.gd'
+    );
   });
 });
 

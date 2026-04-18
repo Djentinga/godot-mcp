@@ -150,12 +150,16 @@ export class ToolFilter {
   }
 }
 
+// Empty / whitespace-only env vars are treated the same as unset so a stray
+// `export GODOT_MCP_DISABLED_TOOLS=` in a shell rc can't silently wipe a
+// JSON-configured denylist.
 function parseList(value: string | undefined): string[] | undefined {
   if (value === undefined) return undefined;
-  return value
+  const items = value
     .split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
+  return items.length === 0 ? undefined : items;
 }
 
 function warnUnknown(field: string, requested: Set<string>, available: Set<string>): void {

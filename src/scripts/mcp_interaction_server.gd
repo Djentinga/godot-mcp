@@ -2984,6 +2984,10 @@ func _cmd_script(params: Dictionary) -> void:
 			if s is GDScript:
 				language = "gdscript"
 				source_text = s.source_code
+			# Use a string compare against "CSharpScript" rather than `is
+			# CSharpScript`: non-mono Godot builds don't ship the CSharpScript
+			# type at all, so a typed reference would fail to parse this
+			# autoload. get_class() works on every build.
 			elif s.get_class() == "CSharpScript":
 				language = "csharp"
 				if s.resource_path != "" and FileAccess.file_exists(s.resource_path):
