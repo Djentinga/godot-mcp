@@ -4563,6 +4563,31 @@ class GodotServer {
   }
 
   /**
+   * Extract a UID from a get_uid operation's stdout. Returns the UID string
+   * when found, an object with a `hint` when the script reported no UID, or
+   * null when the output is unparseable.
+   *
+   * The GDScript side emits a single JSON object after the Godot banner. We
+   * also accept a bare `uid://…` match as a defensive fallback for older
+   * dispatcher builds that might emit plain text.
+   */
+  private pickUidFromStdout(stdout: string): string | { hint: string } | null {
+    const parsed = extractTrailingJson(stdout);
+    if (parsed && typeof parsed === 'object') {
+      if (parsed.exists && typeof parsed.uid === 'string') return parsed.uid;
+      if (parsed.exists === false) {
+        return {
+          hint: parsed.message
+            ? String(parsed.message)
+            : 'No UID found. If the file is a .cs/.gd, Godot 4.4+ writes a sidecar .uid file when the project is imported; run the editor once or use resave_resources.',
+        };
+      }
+    }
+    const uidMatch = stdout.match(/uid:\/\/[a-z0-9]+/i);
+    return uidMatch ? uidMatch[0] : null;
+  }
+
+  /**
    * Handle the get_uid tool
    */
   private async handleGetUid(args: any) {
@@ -4632,35 +4657,12 @@ class GodotServer {
         );
       }
 
-      // The GDScript side emits a single JSON object on stdout, after the
-      // Godot engine banner. Find the last balanced {...} and parse it so
-      // we don't confuse ourselves with banner text that incidentally
-      // contains characters.
-      const parsed = extractTrailingJson(stdout);
-      if (parsed && typeof parsed === 'object') {
-        if (parsed.exists && typeof parsed.uid === 'string') {
-          return {
-            content: [
-              { type: 'text', text: `UID for ${args.filePath}: ${parsed.uid}` },
-            ],
-          };
-        }
-        if (parsed.exists === false) {
-          const hint = parsed.message
-            ? String(parsed.message)
-            : 'No UID found. If the file is a .cs/.gd, Godot 4.4+ writes a sidecar .uid file when the project is imported; run the editor once or use resave_resources.';
-          return createErrorResponse(`No UID for ${args.filePath}: ${hint}`);
-        }
+      const picked = this.pickUidFromStdout(stdout);
+      if (typeof picked === 'string') {
+        return { content: [{ type: 'text', text: `UID for ${args.filePath}: ${picked}` }] };
       }
-
-      // Legacy / defensive fallback: a bare uid://... somewhere in stdout.
-      const uidMatch = stdout.match(/uid:\/\/[a-z0-9]+/i);
-      if (uidMatch) {
-        return {
-          content: [
-            { type: 'text', text: `UID for ${args.filePath}: ${uidMatch[0]}` },
-          ],
-        };
+      if (picked && typeof picked === 'object') {
+        return createErrorResponse(`No UID for ${args.filePath}: ${picked.hint}`);
       }
       return createErrorResponse(
         `No UID found for ${args.filePath}. Godot stdout: ${stdout.trim() || '(empty)'}`
@@ -6879,50 +6881,47 @@ class GodotServer {
 }
 
 /**
- * Scan a Godot stdout blob for the last balanced JSON object and parse it.
- * Returns `null` when no syntactically valid object is found — callers fall
- * back to legacy parsing or emit a clean error.
+ * Scan a Godot stdout blob for the first balanced JSON object and parse it.
+ * Returns `null` when no syntactically valid object is found.
  *
- * We walk backwards from the last `}` so the Godot engine banner printed
- * before the script's JSON output doesn't confuse the matcher.
+ * Godot's engine banner contains no `{`, so the first `{` in stdout reliably
+ * starts the script's own JSON payload. We scan forward so string-escape
+ * tracking works naturally (backwards scanning would encounter the escaped
+ * character before the backslash that escapes it).
  */
 function extractTrailingJson(blob: string): any {
-  const end = blob.lastIndexOf('}');
-  if (end === -1) return null;
+  const start = blob.indexOf('{');
+  if (start === -1) return null;
   let depth = 0;
   let inString = false;
-  let escape = false;
-  let start = -1;
-  for (let i = end; i >= 0; i--) {
+  for (let i = start; i < blob.length; i++) {
     const ch = blob[i];
-    if (escape) {
-      escape = false;
-      continue;
-    }
-    if (ch === '\\' && inString) {
-      escape = true;
+    if (inString) {
+      if (ch === '\\') {
+        // Skip the escaped character.
+        i++;
+        continue;
+      }
+      if (ch === '"') inString = false;
       continue;
     }
     if (ch === '"') {
-      inString = !inString;
+      inString = true;
       continue;
     }
-    if (inString) continue;
-    if (ch === '}') depth++;
-    else if (ch === '{') {
+    if (ch === '{') depth++;
+    else if (ch === '}') {
       depth--;
       if (depth === 0) {
-        start = i;
-        break;
+        try {
+          return JSON.parse(blob.slice(start, i + 1));
+        } catch {
+          return null;
+        }
       }
     }
   }
-  if (start === -1) return null;
-  try {
-    return JSON.parse(blob.slice(start, end + 1));
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 // Create and run the server

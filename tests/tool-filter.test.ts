@@ -107,8 +107,9 @@ describe('ToolFilter', () => {
     it('includes only tools carrying at least one matching tag', () => {
       const filter = new ToolFilter({ enabledTags: ['gdscript-only'] });
       const out = filter.filter(TOOLS);
-      expect(names(out).sort()).toEqual(
-        ['game_eval', 'create_script', 'attach_script', 'game_script'].sort()
+      const byName = (a: string, b: string) => a.localeCompare(b);
+      expect(names(out).sort(byName)).toEqual(
+        ['game_eval', 'create_script', 'attach_script', 'game_script'].sort(byName)
       );
     });
 
@@ -157,6 +158,13 @@ describe('ToolFilter', () => {
 
   describe('ToolFilter.load', () => {
     let tmpDir: string;
+    const writeConfig = (contents: string | object): string => {
+      const p = join(tmpDir, 'config.json');
+      writeFileSync(p, typeof contents === 'string' ? contents : JSON.stringify(contents));
+      return p;
+    };
+    const loadedNames = (env: NodeJS.ProcessEnv): string[] =>
+      names(ToolFilter.load(env).filter(TOOLS));
 
     beforeEach(() => {
       tmpDir = mkdtempSync(join(tmpdir(), 'godot-mcp-test-'));
@@ -167,103 +175,61 @@ describe('ToolFilter', () => {
     });
 
     it('returns default filter when no env vars are set', () => {
-      const filter = ToolFilter.load({});
-      const out = filter.filter(TOOLS);
-      expect(names(out)).toEqual(names(TOOLS));
+      expect(loadedNames({})).toEqual(names(TOOLS));
     });
 
     it('reads a JSON config file', () => {
-      const path = join(tmpDir, 'config.json');
-      writeFileSync(
-        path,
-        JSON.stringify({ disabledTags: ['gdscript-only'] })
-      );
-      const filter = ToolFilter.load({ GODOT_MCP_CONFIG: path });
-      const out = filter.filter(TOOLS);
-      expect(names(out)).not.toContain('game_eval');
-      expect(names(out)).toContain('launch_editor');
+      const path = writeConfig({ disabledTags: ['gdscript-only'] });
+      const out = loadedNames({ GODOT_MCP_CONFIG: path });
+      expect(out).not.toContain('game_eval');
+      expect(out).toContain('launch_editor');
     });
 
     it('parses comma-separated env vars', () => {
-      const filter = ToolFilter.load({
-        GODOT_MCP_DISABLED_TOOLS: 'game_eval, create_script ,attach_script,game_script',
-      });
-      const out = filter.filter(TOOLS);
-      expect(names(out)).toEqual(['launch_editor', 'run_project', 'headless_only_tool']);
+      expect(
+        loadedNames({
+          GODOT_MCP_DISABLED_TOOLS: 'game_eval, create_script ,attach_script,game_script',
+        })
+      ).toEqual(['launch_editor', 'run_project', 'headless_only_tool']);
     });
 
     it('env vars replace file fields per-field', () => {
-      const path = join(tmpDir, 'config.json');
-      writeFileSync(
-        path,
-        JSON.stringify({
-          disabledTools: ['launch_editor'],
-          disabledTags: ['gdscript-only'],
-        })
-      );
-      const filter = ToolFilter.load({
+      const path = writeConfig({
+        disabledTools: ['launch_editor'],
+        disabledTags: ['gdscript-only'],
+      });
+      const out = loadedNames({
         GODOT_MCP_CONFIG: path,
         GODOT_MCP_DISABLED_TOOLS: 'run_project',
       });
-      const out = filter.filter(TOOLS);
-      // disabledTools was replaced (launch_editor allowed again, run_project excluded)
-      // disabledTags from file is preserved (gdscript-only tools still excluded)
-      expect(names(out)).toContain('launch_editor');
-      expect(names(out)).not.toContain('run_project');
-      expect(names(out)).not.toContain('game_eval');
+      // disabledTools was replaced (launch_editor allowed again, run_project excluded);
+      // disabledTags from file is preserved (gdscript-only tools still excluded).
+      expect(out).toContain('launch_editor');
+      expect(out).not.toContain('run_project');
+      expect(out).not.toContain('game_eval');
     });
 
-    it('throws on missing config file', () => {
-      expect(() =>
-        ToolFilter.load({ GODOT_MCP_CONFIG: join(tmpDir, 'nope.json') })
-      ).toThrow(/not found/);
+    it.each<[string, string | object, RegExp]>([
+      ['missing config file', '__absent__', /not found/],
+      ['invalid JSON', '{ not valid json', /not valid JSON/],
+      ['non-object root', '["a", "b"]', /must be a JSON object/],
+      ['field not an array of strings', { disabledTools: 'game_eval' }, /array of strings/],
+    ])('throws on %s', (_label, contents, errorPattern) => {
+      const path =
+        contents === '__absent__' ? join(tmpDir, 'nope.json') : writeConfig(contents);
+      expect(() => ToolFilter.load({ GODOT_MCP_CONFIG: path })).toThrow(errorPattern);
     });
 
-    it('throws on invalid JSON', () => {
-      const path = join(tmpDir, 'bad.json');
-      writeFileSync(path, '{ not valid json');
-      expect(() => ToolFilter.load({ GODOT_MCP_CONFIG: path })).toThrow(
-        /not valid JSON/
-      );
-    });
-
-    it('throws when config file root is not an object', () => {
-      const path = join(tmpDir, 'arr.json');
-      writeFileSync(path, '["a", "b"]');
-      expect(() => ToolFilter.load({ GODOT_MCP_CONFIG: path })).toThrow(
-        /must be a JSON object/
-      );
-    });
-
-    it('throws when a field is not an array of strings', () => {
-      const path = join(tmpDir, 'wrong.json');
-      writeFileSync(path, JSON.stringify({ disabledTools: 'game_eval' }));
-      expect(() => ToolFilter.load({ GODOT_MCP_CONFIG: path })).toThrow(
-        /array of strings/
-      );
-    });
-
-    it('treats an empty env-var as unset so it does not wipe a JSON-configured field', () => {
-      const path = join(tmpDir, 'config.json');
-      writeFileSync(path, JSON.stringify({ disabledTools: ['game_eval'] }));
-      const filter = ToolFilter.load({
+    it.each<[string, string]>([
+      ['empty', ''],
+      ['whitespace-only', '  ,  , '],
+    ])('treats %s env-var as unset (does not wipe JSON-configured field)', (_label, envValue) => {
+      const path = writeConfig({ disabledTools: ['game_eval'] });
+      const out = loadedNames({
         GODOT_MCP_CONFIG: path,
-        GODOT_MCP_DISABLED_TOOLS: '',
+        GODOT_MCP_DISABLED_TOOLS: envValue,
       });
-      const out = filter.filter(TOOLS);
-      // Empty string is treated as unset, so the JSON denylist still applies.
-      expect(names(out)).not.toContain('game_eval');
-    });
-
-    it('treats a whitespace-only env-var as unset', () => {
-      const path = join(tmpDir, 'config.json');
-      writeFileSync(path, JSON.stringify({ disabledTools: ['game_eval'] }));
-      const filter = ToolFilter.load({
-        GODOT_MCP_CONFIG: path,
-        GODOT_MCP_DISABLED_TOOLS: '  ,  , ',
-      });
-      const out = filter.filter(TOOLS);
-      expect(names(out)).not.toContain('game_eval');
+      expect(out).not.toContain('game_eval');
     });
   });
 });
