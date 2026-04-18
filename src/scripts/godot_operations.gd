@@ -910,35 +910,67 @@ func find_files(path, extension):
     return files
 
 # Get UID for a specific file
+# Godot 4.4+ inlines the UID into the header of .tscn / .tres / shader files
+# instead of (or in addition to) a sidecar .uid file. Scan the first 2 KB for
+# a uid="uid://…" attribute before falling back to the sidecar path.
+func _get_uid_inline(res_path: String) -> String:
+    var ext := res_path.get_extension().to_lower()
+    if ext not in ["tscn", "tres", "gdshader", "gdshaderinc"]:
+        return ""
+    var f := FileAccess.open(res_path, FileAccess.READ)
+    if f == null:
+        return ""
+    var head := f.get_buffer(2048).get_string_from_utf8()
+    f.close()
+    var rx := RegEx.new()
+    rx.compile('uid="(uid://[a-z0-9]+)"')
+    var m := rx.search(head)
+    return m.get_string(1) if m else ""
+
 func get_uid(params):
     if not params.has("file_path"):
         printerr("File path is required")
         quit(1)
-    
+
     # Ensure the file path starts with res:// for Godot's resource system
     var file_path = params.file_path
     if not file_path.begins_with("res://"):
         file_path = "res://" + file_path
-    
+
     print("Getting UID for file: " + file_path)
     if debug_mode:
         print("Full file path (with res://): " + file_path)
-    
+
     # Get the absolute path for reference
     var absolute_path = ProjectSettings.globalize_path(file_path)
     if debug_mode:
         print("Absolute file path: " + absolute_path)
-    
+
     # Ensure the file exists
     var file_check = FileAccess.file_exists(file_path)
     if debug_mode:
         print("File exists check: " + str(file_check))
-    
+
     if not file_check:
         printerr("File does not exist at: " + file_path)
         printerr("Absolute file path that doesn't exist: " + absolute_path)
         quit(1)
-    
+
+    # Try inline UID first (Godot 4.4+ headers for scenes/resources/shaders)
+    var inline_uid: String = _get_uid_inline(file_path)
+    if inline_uid != "":
+        var inline_result = {
+            "file": file_path,
+            "absolutePath": absolute_path,
+            "uid": inline_uid,
+            "exists": true,
+            "source": "inline"
+        }
+        if debug_mode:
+            print("Inline UID result: " + JSON.stringify(inline_result))
+        print(JSON.stringify(inline_result))
+        return
+
     # Check if the UID file exists
     var uid_path = file_path + ".uid"
     if debug_mode:

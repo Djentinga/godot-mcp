@@ -532,6 +532,14 @@ The server listens on `127.0.0.1:9090` and accepts JSON commands over TCP when t
 |----------|-------------|
 | `GODOT_PATH` | Path to the Godot executable (overrides auto-detection) |
 | `DEBUG` | Set to `"true"` for detailed server-side logging |
+
+### WSL + Windows Godot
+
+The server runs under Linux Node (WSL) but accepts Windows-style project paths
+(`C:/foo/bar`, `C:\foo\bar`) and translates them to `/mnt/c/foo/bar` for
+filesystem checks. When `GODOT_PATH` points at a Windows `.exe`, the inverse
+translation is applied when invoking the binary so it receives a path it can
+open.
 | `GODOT_MCP_CONFIG` | Path to a JSON tool-filter config file (see "Tool Filtering") |
 | `GODOT_MCP_ENABLED_TOOLS` | Comma-separated allowlist of tool names |
 | `GODOT_MCP_DISABLED_TOOLS` | Comma-separated denylist of tool names |

@@ -1101,8 +1101,8 @@ describe('Lifecycle handlers', () => {
 
   it('handleReadProjectSettings parses INI-style sections', () => {
     expect(sourceCode).toContain('handleReadProjectSettings');
-    // It should parse [section] headers and key=value pairs
-    expect(sourceCode).toContain("match(/^\\[(.+)\\]$/");
+    // Parsing is delegated to the shared utils.parseGodotIni helper.
+    expect(sourceCode).toContain('parseGodotIni');
   });
 
   it('handleModifyProjectSettings writes to project.godot', () => {

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import {
   PARAMETER_MAPPINGS,
   REVERSE_PARAMETER_MAPPINGS,
@@ -7,6 +7,12 @@ import {
   validatePath,
   createErrorResponse,
   isGodot44OrLater,
+  toWslProjectPath,
+  toNativeProjectPath,
+  isWindowsGodotExe,
+  projectGodotFile,
+  toWindowsAccessiblePath,
+  parseGodotIni,
 } from '../src/utils.js';
 
 describe('PARAMETER_MAPPINGS', () => {
@@ -223,5 +229,256 @@ describe('isGodot44OrLater', () => {
   it('handles version strings with extra info', () => {
     expect(isGodot44OrLater('4.4.1.stable')).toBe(true);
     expect(isGodot44OrLater('4.3.2.rc1')).toBe(false);
+  });
+});
+
+describe('WSL path translation', () => {
+  const origPlatform = process.platform;
+  const setPlatform = (p: NodeJS.Platform) => {
+    Object.defineProperty(process, 'platform', { value: p, configurable: true });
+  };
+
+  afterEach(() => setPlatform(origPlatform));
+
+  describe('on linux', () => {
+    beforeEach(() => setPlatform('linux'));
+
+    it('toWslProjectPath converts C:/... to /mnt/c/...', () => {
+      expect(toWslProjectPath('C:/Users/me/game')).toBe('/mnt/c/Users/me/game');
+      expect(toWslProjectPath('D:/projects/x')).toBe('/mnt/d/projects/x');
+    });
+
+    it('toWslProjectPath converts Windows backslashes too', () => {
+      expect(toWslProjectPath('C:\\Users\\me\\game')).toBe('/mnt/c/Users/me/game');
+    });
+
+    it('toWslProjectPath passes /mnt/ paths through', () => {
+      expect(toWslProjectPath('/mnt/c/Users/me')).toBe('/mnt/c/Users/me');
+    });
+
+    it('toWslProjectPath passes linux-native paths through', () => {
+      expect(toWslProjectPath('/home/joachima/game')).toBe('/home/joachima/game');
+    });
+
+    it('toNativeProjectPath converts /mnt/c/... to C:/...', () => {
+      expect(toNativeProjectPath('/mnt/c/Users/me/game')).toBe('C:/Users/me/game');
+      expect(toNativeProjectPath('/mnt/d/x')).toBe('D:/x');
+    });
+
+    it('toNativeProjectPath passes non-mount paths through', () => {
+      expect(toNativeProjectPath('/home/joachima/game')).toBe('/home/joachima/game');
+    });
+
+    it('toNativeProjectPath passes Windows paths through unchanged', () => {
+      expect(toNativeProjectPath('C:/foo')).toBe('C:/foo');
+    });
+  });
+
+  describe('on non-linux', () => {
+    beforeEach(() => setPlatform('darwin'));
+
+    it('toWslProjectPath is a no-op', () => {
+      expect(toWslProjectPath('C:/Users/me')).toBe('C:/Users/me');
+      expect(toWslProjectPath('/Users/me')).toBe('/Users/me');
+    });
+
+    it('toNativeProjectPath is a no-op', () => {
+      expect(toNativeProjectPath('/mnt/c/foo')).toBe('/mnt/c/foo');
+    });
+  });
+
+  describe('empty / falsy paths', () => {
+    it('returns the input unchanged', () => {
+      expect(toWslProjectPath('')).toBe('');
+      expect(toNativeProjectPath('')).toBe('');
+    });
+  });
+});
+
+describe('isWindowsGodotExe', () => {
+  it('is true for .exe paths', () => {
+    expect(isWindowsGodotExe('C:/Program Files/Godot/Godot.exe')).toBe(true);
+    expect(isWindowsGodotExe('godot.EXE')).toBe(true);
+  });
+
+  it('is false for linux / unix binaries', () => {
+    expect(isWindowsGodotExe('/usr/bin/godot')).toBe(false);
+    expect(isWindowsGodotExe('godot')).toBe(false);
+  });
+
+  it('is false for null / undefined / empty', () => {
+    expect(isWindowsGodotExe(null)).toBe(false);
+    expect(isWindowsGodotExe(undefined)).toBe(false);
+    expect(isWindowsGodotExe('')).toBe(false);
+  });
+});
+
+describe('projectGodotFile', () => {
+  const origPlatform = process.platform;
+  const setPlatform = (p: NodeJS.Platform) => {
+    Object.defineProperty(process, 'platform', { value: p, configurable: true });
+  };
+  afterEach(() => setPlatform(origPlatform));
+
+  it('joins a WSL-translated project path with project.godot on linux', () => {
+    setPlatform('linux');
+    expect(projectGodotFile('C:/Users/me/game')).toBe('/mnt/c/Users/me/game/project.godot');
+  });
+
+  it('passes a native project path through on linux', () => {
+    setPlatform('linux');
+    expect(projectGodotFile('/home/me/game')).toBe('/home/me/game/project.godot');
+  });
+
+  it('joins as-is on non-linux', () => {
+    setPlatform('win32');
+    // win32 path.join uses backslashes — just check it ends with project.godot
+    expect(projectGodotFile('C:/Users/me/game')).toMatch(/project\.godot$/);
+  });
+});
+
+describe('toWindowsAccessiblePath', () => {
+  const origPlatform = process.platform;
+  const origDistro = process.env.WSL_DISTRO_NAME;
+  const setPlatform = (p: NodeJS.Platform) => {
+    Object.defineProperty(process, 'platform', { value: p, configurable: true });
+  };
+
+  beforeEach(() => setPlatform('linux'));
+  afterEach(() => {
+    setPlatform(origPlatform);
+    if (origDistro === undefined) delete process.env.WSL_DISTRO_NAME;
+    else process.env.WSL_DISTRO_NAME = origDistro;
+  });
+
+  it('passes through when godotPath is not a .exe', () => {
+    expect(toWindowsAccessiblePath('/home/me/x.gd', '/usr/bin/godot')).toBe('/home/me/x.gd');
+  });
+
+  it('converts /mnt/<letter>/... to Windows drive form for Godot.exe', () => {
+    expect(toWindowsAccessiblePath('/mnt/c/Foo/bar.gd', 'C:/Godot/Godot.exe')).toBe(
+      'C:/Foo/bar.gd'
+    );
+  });
+
+  it('converts /home/... to WSL UNC form for Godot.exe', () => {
+    process.env.WSL_DISTRO_NAME = 'Ubuntu';
+    expect(toWindowsAccessiblePath('/home/me/script.gd', 'C:/Godot/Godot.exe')).toBe(
+      '\\\\wsl.localhost\\Ubuntu\\home\\me\\script.gd'
+    );
+  });
+
+  it('uses WSL_DISTRO_NAME from the environment when present', () => {
+    process.env.WSL_DISTRO_NAME = 'Debian';
+    expect(toWindowsAccessiblePath('/opt/tool', 'C:/Godot/Godot.exe')).toMatch(
+      /\\\\wsl\.localhost\\Debian\\opt\\tool/
+    );
+  });
+
+  it('defaults the distro to Ubuntu when the env var is unset', () => {
+    delete process.env.WSL_DISTRO_NAME;
+    expect(toWindowsAccessiblePath('/var/x', 'C:/Godot/Godot.exe')).toMatch(
+      /^\\\\wsl\.localhost\\Ubuntu\\var\\x$/
+    );
+  });
+
+  it('passes a Windows-native path through unchanged', () => {
+    expect(toWindowsAccessiblePath('C:/Foo/bar.gd', 'C:/Godot/Godot.exe')).toBe(
+      'C:/Foo/bar.gd'
+    );
+  });
+
+  it('is a no-op on non-linux platforms', () => {
+    setPlatform('win32');
+    expect(toWindowsAccessiblePath('/home/me/x.gd', 'C:/Godot/Godot.exe')).toBe(
+      '/home/me/x.gd'
+    );
+  });
+
+  it('returns the input unchanged when path or godotPath is empty', () => {
+    expect(toWindowsAccessiblePath('', 'C:/Godot/Godot.exe')).toBe('');
+    expect(toWindowsAccessiblePath('/home/me/x.gd', null)).toBe('/home/me/x.gd');
+  });
+});
+
+describe('parseGodotIni', () => {
+  it('parses a simple flat section', () => {
+    const out = parseGodotIni(
+      `[application]\n` +
+        `config/name="Game"\n` +
+        `run/main_scene="res://Main.tscn"\n`
+    );
+    expect(out.application).toEqual({
+      'config/name': '"Game"',
+      'run/main_scene': '"res://Main.tscn"',
+    });
+  });
+
+  it('parses multi-line input map actions without truncation', () => {
+    const content =
+      `[input]\n` +
+      `PaintGrass={\n` +
+      `"deadzone": 0.5,\n` +
+      `"events": [Object(InputEventKey,"keycode":71,"pressed":false)]\n` +
+      `}\n`;
+    const out = parseGodotIni(content);
+    expect(out.input).toBeDefined();
+    expect(out.input.PaintGrass).toContain('"deadzone": 0.5');
+    expect(out.input.PaintGrass).toContain('"events"');
+    expect(out.input.PaintGrass).toContain('"keycode":71');
+    expect(out.input.PaintGrass.trim().endsWith('}')).toBe(true);
+  });
+
+  it('parses multi-line array values', () => {
+    const content =
+      `[autoload]\n` +
+      `Globals=[\n` +
+      `"res://a.gd",\n` +
+      `"res://b.gd"\n` +
+      `]\n`;
+    const out = parseGodotIni(content);
+    expect(out.autoload.Globals).toContain('"res://a.gd"');
+    expect(out.autoload.Globals).toContain('"res://b.gd"');
+    expect(out.autoload.Globals.trim().endsWith(']')).toBe(true);
+  });
+
+  it('ignores braces inside string literals for depth tracking', () => {
+    const content =
+      `[input]\n` +
+      `evil={\n` +
+      `"comment": "has } inside",\n` +
+      `"closer": "[ not opener"\n` +
+      `}\n`;
+    const out = parseGodotIni(content);
+    expect(out.input.evil.trim().endsWith('}')).toBe(true);
+    expect(out.input.evil).toContain('"has } inside"');
+  });
+
+  it('skips comments and blank lines', () => {
+    const out = parseGodotIni(
+      `; comment\n` +
+        `\n` +
+        `[rendering]\n` +
+        `; another\n` +
+        `msaa_3d=2\n`
+    );
+    expect(out.rendering.msaa_3d).toBe('2');
+  });
+
+  it('handles multiple sections with mixed single and multi-line values', () => {
+    const content =
+      `[application]\n` +
+      `config/name="X"\n` +
+      `\n` +
+      `[input]\n` +
+      `jump={\n` +
+      `"events": []\n` +
+      `}\n` +
+      `left={"deadzone": 0.5}\n`;
+    const out = parseGodotIni(content);
+    expect(out.application['config/name']).toBe('"X"');
+    expect(out.input.jump).toContain('"events"');
+    expect(out.input.jump.trim().endsWith('}')).toBe(true);
+    expect(out.input.left).toBe('{"deadzone": 0.5}');
   });
 });

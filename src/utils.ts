@@ -3,6 +3,8 @@
  * Pure functions extracted for testability.
  */
 
+import { join } from 'path';
+
 export interface OperationParams {
   [key: string]: any;
 }
@@ -231,4 +233,152 @@ export function isGodot44OrLater(version: string): boolean {
     return major > 4 || (major === 4 && minor >= 4);
   }
   return false;
+}
+
+/**
+ * Convert a Windows-style path (e.g. "C:/foo/bar" or "C:\\foo\\bar") into the
+ * WSL mount form ("/mnt/c/foo/bar"). Paths that aren't Windows-native pass
+ * through unchanged. Only active on linux — on Windows and macOS the native
+ * fs layer resolves paths directly.
+ */
+export function toWslProjectPath(p: string): string {
+  if (!p || process.platform !== 'linux') return p;
+  const m = p.match(/^([A-Za-z]):[\\/](.*)$/);
+  return m ? `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}` : p;
+}
+
+/**
+ * Inverse of toWslProjectPath. Converts "/mnt/c/foo/bar" back to "C:/foo/bar"
+ * so a Windows-native Godot executable (Godot.exe invoked via WSL interop)
+ * receives a path it can open. Passthrough for non-mount paths. Linux-only.
+ */
+export function toNativeProjectPath(p: string): string {
+  if (!p || process.platform !== 'linux') return p;
+  const m = p.match(/^\/mnt\/([a-z])\/(.*)$/i);
+  return m ? `${m[1].toUpperCase()}:/${m[2]}` : p;
+}
+
+/**
+ * True when the configured Godot executable is a Windows binary invoked via
+ * WSL interop. Used to decide whether child processes need a Windows-style
+ * project path rather than the /mnt/... form.
+ */
+export function isWindowsGodotExe(godotPath: string | null | undefined): boolean {
+  return !!godotPath && godotPath.toLowerCase().endsWith('.exe');
+}
+
+/**
+ * Join a project directory with "project.godot", translating Windows-style
+ * paths to the WSL mount form first so fs.existsSync can resolve them when
+ * running on linux.
+ */
+export function projectGodotFile(projectPath: string): string {
+  return join(toWslProjectPath(projectPath), 'project.godot');
+}
+
+/**
+ * Parse a Godot-style INI file (project.godot, export_presets.cfg, …) into a
+ * `{ section: { key: value } }` map. Unlike a naive line-by-line parser this
+ * concatenates continuation lines for values whose RHS starts with `{`, `[`,
+ * or a quoted string and whose closing delimiter lives on a later line —
+ * required for Godot's input map, where each action is serialized as a
+ * multi-line dictionary:
+ *
+ *   PaintGrass={
+ *   "deadzone": 0.5,
+ *   "events": [Object(InputEventKey,"keycode":71,…)]
+ *   }
+ *
+ * Depth tracking ignores braces/brackets that appear inside double-quoted
+ * string literals so embedded `}` characters don't close the block early.
+ * Returns raw string values — callers can JSON.parse them if needed.
+ */
+export function parseGodotIni(content: string): Record<string, Record<string, string>> {
+  const sections: Record<string, Record<string, string>> = {};
+  const lines = content.split('\n');
+  let currentSection = '';
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (trimmed === '' || trimmed.startsWith(';')) {
+      i++;
+      continue;
+    }
+
+    // Section header
+    const sectionMatch = trimmed.match(/^\[(.+)\]$/);
+    if (sectionMatch) {
+      currentSection = sectionMatch[1];
+      if (!sections[currentSection]) sections[currentSection] = {};
+      i++;
+      continue;
+    }
+
+    // Key=value pair, possibly spanning multiple lines.
+    const kvMatch = trimmed.match(/^([^=]+)=(.*)$/);
+    if (kvMatch && currentSection) {
+      const key = kvMatch[1].trim();
+      let value = kvMatch[2];
+      let depth = countIniDepth(value);
+      i++;
+      while (depth > 0 && i < lines.length) {
+        value += '\n' + lines[i];
+        depth += countIniDepth(lines[i]);
+        i++;
+      }
+      sections[currentSection][key] = value.trim();
+      continue;
+    }
+    i++;
+  }
+
+  return sections;
+}
+
+function countIniDepth(text: string): number {
+  let depth = 0;
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '\\' && inString) {
+      i++;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === '{' || ch === '[') depth++;
+    else if (ch === '}' || ch === ']') depth--;
+  }
+  return depth;
+}
+
+/**
+ * Translate an arbitrary linux path into a form a Windows Godot.exe (invoked
+ * via WSL interop) can open:
+ *   - `/mnt/<c>/...`  → `C:/...`
+ *   - `/home/...`, `/usr/...`, etc. → `\\wsl.localhost\<distro>\<rest>`
+ *   - Windows-native paths (`C:/...`) pass through
+ *
+ * Only active when godotPath is a .exe on linux; otherwise returns the input
+ * unchanged. Distro name comes from $WSL_DISTRO_NAME when available,
+ * defaulting to "Ubuntu".
+ */
+export function toWindowsAccessiblePath(
+  p: string,
+  godotPath: string | null | undefined
+): string {
+  if (!p || !isWindowsGodotExe(godotPath) || process.platform !== 'linux') return p;
+  // Already Windows-native
+  if (/^[A-Za-z]:[\\/]/.test(p)) return p;
+  // /mnt/<letter>/... → <Letter>:/...
+  const mnt = p.match(/^\/mnt\/([a-z])\/(.*)$/i);
+  if (mnt) return `${mnt[1].toUpperCase()}:/${mnt[2]}`;
+  // Linux-native path → WSL UNC (backslash-separated for Windows).
+  const distro = process.env.WSL_DISTRO_NAME || 'Ubuntu';
+  return `\\\\wsl.localhost\\${distro}\\${p.replace(/^\//, '').replace(/\//g, '\\')}`;
 }

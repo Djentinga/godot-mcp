@@ -31,6 +31,12 @@ import {
   validatePath,
   createErrorResponse,
   isGodot44OrLater,
+  toWslProjectPath,
+  toNativeProjectPath,
+  isWindowsGodotExe,
+  projectGodotFile,
+  toWindowsAccessiblePath,
+  parseGodotIni,
   type OperationParams,
 } from './utils.js';
 import { ToolFilter, type ToolDef } from './tool-filter.js';
@@ -227,6 +233,16 @@ class GodotServer {
   }
 
   /**
+   * Return the project path form that the configured Godot executable
+   * expects. When Godot is a Windows .exe invoked via WSL interop, convert
+   * /mnt/c/... to C:/... so Godot can open the project. Otherwise pass
+   * through.
+   */
+  private godotSpawnPath(projectPath: string): string {
+    return isWindowsGodotExe(this.godotPath) ? toNativeProjectPath(projectPath) : projectPath;
+  }
+
+  /**
    * Detect the Godot executable path based on the operating system
    */
   private async detectGodotPath() {
@@ -236,17 +252,15 @@ class GodotServer {
       return;
     }
 
-    // Check environment variable next
+    // Check environment variable next. Trust the user's explicit choice and
+    // skip pre-validation — execFile --version can fail silently through WSL
+    // interop, bad pipes, or non-zero exit, and falling through to autodetect
+    // hides the real error. Let the first real invocation surface it.
     if (process.env.GODOT_PATH) {
       const normalizedPath = normalize(process.env.GODOT_PATH);
-      this.logDebug(`Checking GODOT_PATH environment variable: ${normalizedPath}`);
-      if (await this.isValidGodotPath(normalizedPath)) {
-        this.godotPath = normalizedPath;
-        this.logDebug(`Using Godot path from environment: ${this.godotPath}`);
-        return;
-      } else {
-        this.logDebug(`GODOT_PATH environment variable is invalid`);
-      }
+      this.godotPath = normalizedPath;
+      this.logDebug(`Using GODOT_PATH from env (pre-validation skipped): ${normalizedPath}`);
+      return;
     }
 
     // Auto-detect based on platform
@@ -295,7 +309,10 @@ class GodotServer {
 
     // If we get here, we couldn't find Godot
     this.logDebug(`Warning: Could not find Godot in common locations for ${osPlatform}`);
-    console.error(`[SERVER] Could not find Godot in common locations for ${osPlatform}`);
+    const envNote = process.env.GODOT_PATH
+      ? ` (GODOT_PATH=${process.env.GODOT_PATH} did not resolve to a usable binary)`
+      : '';
+    console.error(`[SERVER] Could not find Godot in common locations for ${osPlatform}${envNote}`);
     console.error(`[SERVER] Set GODOT_PATH=/path/to/godot environment variable or pass { godotPath: '/path/to/godot' } in the config to specify the correct path.`);
 
     if (this.strictPathValidation) {
@@ -344,7 +361,7 @@ class GodotServer {
    * Inject the interaction server script into the Godot project
    */
   private injectInteractionServer(projectPath: string): void {
-    const projectFile = join(projectPath, 'project.godot');
+    const projectFile = projectGodotFile(projectPath);
     const destScript = join(projectPath, 'mcp_interaction_server.gd');
 
     // Copy the interaction script into the project
@@ -378,7 +395,7 @@ class GodotServer {
    * Remove the interaction server script and autoload from the project
    */
   private removeInteractionServer(projectPath: string): void {
-    const projectFile = join(projectPath, 'project.godot');
+    const projectFile = projectGodotFile(projectPath);
     const destScript = join(projectPath, 'mcp_interaction_server.gd');
 
     // Remove autoload line from project.godot
@@ -573,7 +590,7 @@ class GodotServer {
     if (!projectPath) return createErrorResponse('projectPath is required.');
     if (!validatePath(projectPath)) return createErrorResponse('Invalid path.');
 
-    const projectFile = join(projectPath, 'project.godot');
+    const projectFile = projectGodotFile(projectPath);
     if (!existsSync(projectFile)) return createErrorResponse(`Not a valid Godot project: ${projectPath}`);
 
     try {
@@ -622,9 +639,9 @@ class GodotServer {
       const args = [
         '--headless',
         '--path',
-        projectPath,  // Safe: passed as argument, not interpolated into shell command
+        this.godotSpawnPath(projectPath),  // Translate /mnt/c/... → C:/... for Windows Godot
         '--script',
-        this.operationsScriptPath,
+        toWindowsAccessiblePath(this.operationsScriptPath, this.godotPath),
         operation,
         paramsJson,  // Safe: passed as argument, not interpreted by shell
       ];
@@ -716,7 +733,7 @@ class GodotServer {
 
     try {
       // Check if the directory itself is a Godot project
-      const projectFile = join(directory, 'project.godot');
+      const projectFile = projectGodotFile(directory);
       if (existsSync(projectFile)) {
         projects.push({
           path: directory,
@@ -730,7 +747,7 @@ class GodotServer {
         for (const entry of entries) {
           if (entry.isDirectory()) {
             const subdir = join(directory, entry.name);
-            const projectFile = join(subdir, 'project.godot');
+            const projectFile = projectGodotFile(subdir);
             if (existsSync(projectFile)) {
               projects.push({
                 path: subdir,
@@ -750,7 +767,7 @@ class GodotServer {
               continue;
             }
             // Check if this directory is a Godot project
-            const projectFile = join(subdir, 'project.godot');
+            const projectFile = projectGodotFile(subdir);
             if (existsSync(projectFile)) {
               projects.push({
                 path: subdir,
@@ -3737,7 +3754,7 @@ class GodotServer {
       }
 
       // Check if the project directory exists and contains a project.godot file
-      const projectFile = join(args.projectPath, 'project.godot');
+      const projectFile = projectGodotFile(args.projectPath);
       if (!existsSync(projectFile)) {
         return createErrorResponse(
           `Not a valid Godot project: ${args.projectPath}`
@@ -3745,7 +3762,7 @@ class GodotServer {
       }
 
       this.logDebug(`Launching Godot editor for project: ${args.projectPath}`);
-      const process = spawn(this.godotPath, ['-e', '--path', args.projectPath], {
+      const process = spawn(this.godotPath, ['-e', '--path', this.godotSpawnPath(args.projectPath)], {
         stdio: 'pipe',
       });
 
@@ -3791,7 +3808,7 @@ class GodotServer {
 
     try {
       // Check if the project directory exists and contains a project.godot file
-      const projectFile = join(args.projectPath, 'project.godot');
+      const projectFile = projectGodotFile(args.projectPath);
       if (!existsSync(projectFile)) {
         return createErrorResponse(
           `Not a valid Godot project: ${args.projectPath}`
@@ -3811,7 +3828,7 @@ class GodotServer {
       // Inject interaction server before launching
       this.injectInteractionServer(args.projectPath);
 
-      const cmdArgs = ['-d', '--path', args.projectPath];
+      const cmdArgs = ['-d', '--path', this.godotSpawnPath(args.projectPath)];
       if (args.scene && validatePath(args.scene)) {
         this.logDebug(`Adding scene parameter: ${args.scene}`);
         cmdArgs.push(args.scene);
@@ -4121,7 +4138,7 @@ class GodotServer {
       }
   
       // Check if the project directory exists and contains a project.godot file
-      const projectFile = join(args.projectPath, 'project.godot');
+      const projectFile = projectGodotFile(args.projectPath);
       if (!existsSync(projectFile)) {
         return createErrorResponse(
           `Not a valid Godot project: ${args.projectPath}`
@@ -4196,7 +4213,7 @@ class GodotServer {
 
     try {
       // Check if the project directory exists and contains a project.godot file
-      const projectFile = join(args.projectPath, 'project.godot');
+      const projectFile = projectGodotFile(args.projectPath);
       if (!existsSync(projectFile)) {
         return createErrorResponse(
           `Not a valid Godot project: ${args.projectPath}`
@@ -4254,7 +4271,7 @@ class GodotServer {
 
     try {
       // Check if the project directory exists and contains a project.godot file
-      const projectFile = join(args.projectPath, 'project.godot');
+      const projectFile = projectGodotFile(args.projectPath);
       if (!existsSync(projectFile)) {
         return createErrorResponse(
           `Not a valid Godot project: ${args.projectPath}`
@@ -4335,7 +4352,7 @@ class GodotServer {
 
     try {
       // Check if the project directory exists and contains a project.godot file
-      const projectFile = join(args.projectPath, 'project.godot');
+      const projectFile = projectGodotFile(args.projectPath);
       if (!existsSync(projectFile)) {
         return createErrorResponse(
           `Not a valid Godot project: ${args.projectPath}`
@@ -4414,7 +4431,7 @@ class GodotServer {
 
     try {
       // Check if the project directory exists and contains a project.godot file
-      const projectFile = join(args.projectPath, 'project.godot');
+      const projectFile = projectGodotFile(args.projectPath);
       if (!existsSync(projectFile)) {
         return createErrorResponse(
           `Not a valid Godot project: ${args.projectPath}`
@@ -4492,7 +4509,7 @@ class GodotServer {
 
     try {
       // Check if the project directory exists and contains a project.godot file
-      const projectFile = join(args.projectPath, 'project.godot');
+      const projectFile = projectGodotFile(args.projectPath);
       if (!existsSync(projectFile)) {
         return createErrorResponse(
           `Not a valid Godot project: ${args.projectPath}`
@@ -4573,7 +4590,7 @@ class GodotServer {
       }
 
       // Check if the project directory exists and contains a project.godot file
-      const projectFile = join(args.projectPath, 'project.godot');
+      const projectFile = projectGodotFile(args.projectPath);
       if (!existsSync(projectFile)) {
         return createErrorResponse(
           `Not a valid Godot project: ${args.projectPath}`
@@ -4612,11 +4629,20 @@ class GodotServer {
         );
       }
 
+      // Godot prints its engine banner before any script output, so we can't
+      // just trim stdout. UIDs always start with uid://.
+      const uidMatch = stdout.match(/uid:\/\/[a-z0-9]+/i);
+      if (!uidMatch) {
+        return createErrorResponse(
+          `No UID found for ${args.filePath}. Godot stdout: ${stdout.trim() || '(empty)'}`
+        );
+      }
+
       return {
         content: [
           {
             type: 'text',
-            text: `UID for ${args.filePath}: ${stdout.trim()}`,
+            text: `UID for ${args.filePath}: ${uidMatch[0]}`,
           },
         ],
       };
@@ -4770,7 +4796,7 @@ class GodotServer {
       return createErrorResponse('Invalid path.');
     }
 
-    const projectFile = join(args.projectPath, 'project.godot');
+    const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile)) {
       return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     }
@@ -4850,39 +4876,14 @@ class GodotServer {
       return createErrorResponse('Invalid path.');
     }
 
-    const projectFile = join(args.projectPath, 'project.godot');
+    const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile)) {
       return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     }
 
     try {
       const content = readFileSync(projectFile, 'utf8');
-      const sections: Record<string, Record<string, string>> = {};
-      let currentSection = '';
-
-      for (const line of content.split('\n')) {
-        const trimmed = line.trim();
-        if (trimmed === '' || trimmed.startsWith(';')) continue;
-
-        // Section header
-        const sectionMatch = trimmed.match(/^\[(.+)\]$/);
-        if (sectionMatch) {
-          currentSection = sectionMatch[1];
-          if (!sections[currentSection]) {
-            sections[currentSection] = {};
-          }
-          continue;
-        }
-
-        // Key=value pair
-        const kvMatch = trimmed.match(/^([^=]+)=(.*)$/);
-        if (kvMatch && currentSection) {
-          const key = kvMatch[1].trim();
-          const value = kvMatch[2].trim();
-          sections[currentSection][key] = value;
-        }
-      }
-
+      const sections = parseGodotIni(content);
       return {
         content: [{ type: 'text', text: JSON.stringify(sections, null, 2) }],
       };
@@ -4904,7 +4905,7 @@ class GodotServer {
       return createErrorResponse('Invalid path.');
     }
 
-    const projectFile = join(args.projectPath, 'project.godot');
+    const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile)) {
       return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     }
@@ -5104,7 +5105,7 @@ class GodotServer {
       return createErrorResponse('projectPath and filePath are required.');
     if (!validatePath(args.projectPath) || !validatePath(args.filePath))
       return createErrorResponse('Invalid path.');
-    const projectFile = join(args.projectPath, 'project.godot');
+    const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile))
       return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     const fullPath = join(args.projectPath, args.filePath);
@@ -5124,7 +5125,7 @@ class GodotServer {
       return createErrorResponse('projectPath, filePath, and content are required.');
     if (!validatePath(args.projectPath) || !validatePath(args.filePath))
       return createErrorResponse('Invalid path.');
-    const projectFile = join(args.projectPath, 'project.godot');
+    const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile))
       return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     try {
@@ -5146,7 +5147,7 @@ class GodotServer {
       return createErrorResponse('projectPath and filePath are required.');
     if (!validatePath(args.projectPath) || !validatePath(args.filePath))
       return createErrorResponse('Invalid path.');
-    const projectFile = join(args.projectPath, 'project.godot');
+    const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile))
       return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     const fullPath = join(args.projectPath, args.filePath);
@@ -5166,7 +5167,7 @@ class GodotServer {
       return createErrorResponse('projectPath and directoryPath are required.');
     if (!validatePath(args.projectPath) || !validatePath(args.directoryPath))
       return createErrorResponse('Invalid path.');
-    const projectFile = join(args.projectPath, 'project.godot');
+    const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile))
       return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     try {
@@ -5253,7 +5254,7 @@ class GodotServer {
       if (!existsSync(args.projectPath)) {
         mkdirSync(args.projectPath, { recursive: true });
       }
-      const projectFile = join(args.projectPath, 'project.godot');
+      const projectFile = projectGodotFile(args.projectPath);
       if (existsSync(projectFile))
         return createErrorResponse('A project.godot already exists at this path.');
       const content = `; Engine configuration file.\n; Generated by Godot MCP.\n\nconfig_version=5\n\n[application]\n\nconfig/name="${args.projectName}"\nconfig/features=PackedStringArray("4.3")\n`;
@@ -5270,7 +5271,7 @@ class GodotServer {
       return createErrorResponse('projectPath and action are required.');
     if (!validatePath(args.projectPath))
       return createErrorResponse('Invalid path.');
-    const projectFile = join(args.projectPath, 'project.godot');
+    const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile))
       return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     try {
@@ -5316,20 +5317,14 @@ class GodotServer {
       return createErrorResponse('projectPath and action are required.');
     if (!validatePath(args.projectPath))
       return createErrorResponse('Invalid path.');
-    const projectFile = join(args.projectPath, 'project.godot');
+    const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile))
       return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     try {
       let content = readFileSync(projectFile, 'utf8');
       if (args.action === 'list') {
-        const actions: Record<string, string> = {};
-        const inputMatch = content.match(/\[input\]([\s\S]*?)(?=\n\[|$)/);
-        if (inputMatch) {
-          for (const line of inputMatch[1].split('\n')) {
-            const kv = line.trim().match(/^([^=]+)=(.*)$/);
-            if (kv) actions[kv[1].trim()] = kv[2].trim();
-          }
-        }
+        const sections = parseGodotIni(content);
+        const actions = sections['input'] || {};
         return { content: [{ type: 'text', text: JSON.stringify(actions, null, 2) }] };
       } else if (args.action === 'add') {
         if (!args.actionName)
@@ -5384,7 +5379,7 @@ class GodotServer {
       return createErrorResponse('projectPath and action are required.');
     if (!validatePath(args.projectPath))
       return createErrorResponse('Invalid path.');
-    const projectFile = join(args.projectPath, 'project.godot');
+    const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile))
       return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     const presetsFile = join(args.projectPath, 'export_presets.cfg');
@@ -5623,7 +5618,7 @@ class GodotServer {
       return createErrorResponse('projectPath, presetName, and outputPath are required.');
     if (!validatePath(args.projectPath))
       return createErrorResponse('Invalid project path.');
-    const projectFile = join(args.projectPath, 'project.godot');
+    const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile))
       return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     if (!this.godotPath) {
@@ -5632,7 +5627,7 @@ class GodotServer {
     }
     try {
       const exportFlag = args.debug ? '--export-debug' : '--export-release';
-      const exportArgs = ['--headless', '--path', args.projectPath, exportFlag, args.presetName, args.outputPath];
+      const exportArgs = ['--headless', '--path', this.godotSpawnPath(args.projectPath), exportFlag, args.presetName, args.outputPath];
       const { stdout, stderr } = await execFileAsync(this.godotPath!, exportArgs, { timeout: 120000 });
       if (stderr && stderr.includes('ERROR'))
         return createErrorResponse(`Export failed: ${stderr}`);
@@ -6237,7 +6232,7 @@ class GodotServer {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.filePath || !args.newPath) return createErrorResponse('projectPath, filePath, and newPath are required.');
     if (!validatePath(args.projectPath) || !validatePath(args.filePath) || !validatePath(args.newPath)) return createErrorResponse('Invalid path.');
-    const projectFile = join(args.projectPath, 'project.godot');
+    const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile)) return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     const srcFull = join(args.projectPath, args.filePath);
     const dstFull = join(args.projectPath, args.newPath);
@@ -6265,7 +6260,7 @@ class GodotServer {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.scriptPath) return createErrorResponse('projectPath and scriptPath are required.');
     if (!validatePath(args.projectPath) || !validatePath(args.scriptPath)) return createErrorResponse('Invalid path.');
-    const projectFile = join(args.projectPath, 'project.godot');
+    const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile)) return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     try {
       const fullPath = join(args.projectPath, args.scriptPath);
@@ -6313,7 +6308,7 @@ class GodotServer {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.action) return createErrorResponse('projectPath and action are required.');
     if (!validatePath(args.projectPath)) return createErrorResponse('Invalid path.');
-    const projectFile = join(args.projectPath, 'project.godot');
+    const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile)) return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     try {
       let content = readFileSync(projectFile, 'utf8');
@@ -6349,7 +6344,7 @@ class GodotServer {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.action) return createErrorResponse('projectPath and action are required.');
     if (!validatePath(args.projectPath)) return createErrorResponse('Invalid path.');
-    const projectFile = join(args.projectPath, 'project.godot');
+    const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile)) return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     try {
       let content = readFileSync(projectFile, 'utf8');
@@ -6393,7 +6388,7 @@ class GodotServer {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.shaderPath || !args.action) return createErrorResponse('projectPath, shaderPath, and action are required.');
     if (!validatePath(args.projectPath) || !validatePath(args.shaderPath)) return createErrorResponse('Invalid path.');
-    const projectFile = join(args.projectPath, 'project.godot');
+    const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile)) return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     const fullPath = join(args.projectPath, args.shaderPath);
     try {
@@ -6431,7 +6426,7 @@ class GodotServer {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.scenePath) return createErrorResponse('projectPath and scenePath are required.');
     if (!validatePath(args.projectPath)) return createErrorResponse('Invalid path.');
-    const projectFile = join(args.projectPath, 'project.godot');
+    const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile)) return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     try {
       let content = readFileSync(projectFile, 'utf8');
@@ -6472,7 +6467,7 @@ class GodotServer {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.action) return createErrorResponse('projectPath and action are required.');
     if (!validatePath(args.projectPath)) return createErrorResponse('Invalid path.');
-    const projectFile = join(args.projectPath, 'project.godot');
+    const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile)) return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     try {
       let content = readFileSync(projectFile, 'utf8');
@@ -6690,7 +6685,7 @@ class GodotServer {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.action) return createErrorResponse('projectPath and action are required.');
     if (!validatePath(args.projectPath)) return createErrorResponse('Invalid path.');
-    const projectFile = join(args.projectPath, 'project.godot');
+    const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile)) return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     const workflowDir = join(args.projectPath, '.github', 'workflows');
     const workflowPath = join(workflowDir, 'godot-export.yml');
@@ -6718,7 +6713,7 @@ class GodotServer {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.action) return createErrorResponse('projectPath and action are required.');
     if (!validatePath(args.projectPath)) return createErrorResponse('Invalid path.');
-    const projectFile = join(args.projectPath, 'project.godot');
+    const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile)) return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     const dockerfilePath = join(args.projectPath, 'Dockerfile');
     try {
@@ -6771,7 +6766,7 @@ class GodotServer {
       }
 
       // Check if the project directory exists and contains a project.godot file
-      const projectFile = join(args.projectPath, 'project.godot');
+      const projectFile = projectGodotFile(args.projectPath);
       if (!existsSync(projectFile)) {
         return createErrorResponse(
           `Not a valid Godot project: ${args.projectPath}`
