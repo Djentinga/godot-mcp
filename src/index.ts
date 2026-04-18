@@ -34,6 +34,7 @@ import {
   type OperationParams,
 } from './utils.js';
 import { ToolFilter, type ToolDef } from './tool-filter.js';
+import { buildGdScriptTemplate, buildCSharpScriptTemplate } from './script-templates.js';
 
 // Check if debug mode is enabled
 const DEBUG_MODE: boolean = process.env.DEBUG === 'true';
@@ -1587,15 +1588,15 @@ class GodotServer {
         },
 {
           name: 'attach_script',
-          description: 'Attach a GDScript to a scene node (headless)',
-          tags: ['script', 'gdscript-only', 'headless'],
+          description: 'Attach a GDScript or C# script to a scene node (headless)',
+          tags: ['script', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
               projectPath: { type: 'string', description: 'Godot project path' },
               scenePath: { type: 'string', description: 'Scene file path (relative to project)' },
               nodePath: { type: 'string', description: 'Path to the node within the scene (e.g., "root/Player")' },
-              scriptPath: { type: 'string', description: 'Path to the .gd script file (relative to project)' },
+              scriptPath: { type: 'string', description: 'Script path (.gd or .cs) relative to project. C# must be prebuilt.' },
             },
             required: ['projectPath', 'scenePath', 'nodePath', 'scriptPath'],
           },
@@ -2365,14 +2366,15 @@ class GodotServer {
         },
         {
           name: 'game_script',
-          description: 'Attach, detach, or get source of node scripts',
-          tags: ['runtime', 'script', 'gdscript-only'],
+          description: 'Attach, detach, or read source of node scripts (GDScript or C#)',
+          tags: ['runtime', 'script'],
           inputSchema: {
             type: 'object',
             properties: {
               nodePath: { type: 'string', description: 'Path to the node' },
               action: { type: 'string', description: 'Action: attach, detach, get_source' },
-              source: { type: 'string', description: 'GDScript source code (for attach)' },
+              scriptPath: { type: 'string', description: 'Path to precompiled .gd or .cs (attach only). C# must be prebuilt.' },
+              source: { type: 'string', description: 'Inline GDScript source (attach). No inline C# — use scriptPath instead.' },
               className: { type: 'string', description: 'Class the script extends' },
             },
             required: ['nodePath', 'action'],
@@ -2933,15 +2935,15 @@ class GodotServer {
         },
         {
           name: 'create_script',
-          description: 'Create a GDScript file from a template',
-          tags: ['script', 'gdscript-only', 'headless'],
+          description: 'Create a GDScript (.gd) or C# (.cs) script file from a template',
+          tags: ['script', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
               projectPath: { type: 'string', description: 'Godot project path' },
-              scriptPath: { type: 'string', description: 'Script file path (relative to project)' },
-              extends: { type: 'string', description: 'Base class to extend. Default: Node' },
-              className: { type: 'string', description: 'Optional class_name' },
+              scriptPath: { type: 'string', description: 'Script path (.gd or .cs) relative to project. Language inferred from extension.' },
+              extends: { type: 'string', description: 'Base class. Default: Node' },
+              className: { type: 'string', description: 'Optional class_name (.gd) / required for .cs (defaults to filename)' },
               methods: { type: 'array', description: 'Method stubs to include' },
               source: { type: 'string', description: 'Full source code (overrides template)' },
             },
@@ -5838,8 +5840,12 @@ class GodotServer {
   private async handleGameScript(args: any) {
     args = normalizeParameters(args || {});
     if (!args.nodePath || !args.action) return createErrorResponse('nodePath and action are required.');
+    if (args.action === 'attach' && !args.scriptPath && !args.source) {
+      return createErrorResponse('attach requires either scriptPath (precompiled .gd/.cs) or source (inline GDScript).');
+    }
     return this.gameCommand('script', args, a => ({
       node_path: a.nodePath, action: a.action,
+      ...(a.scriptPath ? { script_path: a.scriptPath } : {}),
       ...(a.source ? { source: a.source } : {}),
       ...(a.className ? { class_name: a.className } : {}),
     }));
@@ -6265,18 +6271,21 @@ class GodotServer {
       const fullPath = join(args.projectPath, args.scriptPath);
       const dir = dirname(fullPath);
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      const isCSharp = args.scriptPath.toLowerCase().endsWith('.cs');
       let source = args.source;
       if (!source) {
-        const ext = args.extends || 'Node';
-        const lines = [`extends ${ext}`, ''];
-        if (args.className) lines.splice(1, 0, `class_name ${args.className}`);
-        if (args.methods && Array.isArray(args.methods)) {
-          for (const m of args.methods) {
-            lines.push('', `func ${m}():`);
-            lines.push('\tpass');
-          }
-        }
-        source = lines.join('\n') + '\n';
+        source = isCSharp
+          ? buildCSharpScriptTemplate({
+              scriptPath: args.scriptPath,
+              baseClass: args.extends,
+              className: args.className,
+              methods: Array.isArray(args.methods) ? args.methods : [],
+            })
+          : buildGdScriptTemplate({
+              baseClass: args.extends,
+              className: args.className,
+              methods: Array.isArray(args.methods) ? args.methods : [],
+            });
       }
       writeFileSync(fullPath, source, 'utf8');
       return { content: [{ type: 'text', text: `Script created at ${args.scriptPath}` }] };

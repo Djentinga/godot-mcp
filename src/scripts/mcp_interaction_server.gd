@@ -2979,12 +2979,40 @@ func _cmd_script(params: Dictionary) -> void:
 			if s == null:
 				_send_response({"success": true, "has_script": false})
 				return
-			_send_response({"success": true, "has_script": true, "source": s.source_code if s is GDScript else "", "path": s.resource_path})
+			var language: String = "unknown"
+			var source_text: String = ""
+			if s is GDScript:
+				language = "gdscript"
+				source_text = s.source_code
+			elif s.get_class() == "CSharpScript":
+				language = "csharp"
+				if s.resource_path != "" and FileAccess.file_exists(s.resource_path):
+					source_text = FileAccess.get_file_as_string(s.resource_path)
+			else:
+				if s.resource_path != "" and FileAccess.file_exists(s.resource_path):
+					source_text = FileAccess.get_file_as_string(s.resource_path)
+			_send_response({"success": true, "has_script": true, "source": source_text, "path": s.resource_path, "language": language})
 		"attach":
+			var script_path: String = params.get("script_path", "")
+			if not script_path.is_empty():
+				# Load a precompiled script from disk (works for .gd and .cs).
+				if not script_path.begins_with("res://"):
+					script_path = "res://" + script_path
+				if not FileAccess.file_exists(script_path):
+					_send_response({"error": "Script file does not exist: %s" % script_path})
+					return
+				var loaded: Script = load(script_path) as Script
+				if loaded == null:
+					_send_response({"error": "Failed to load script as Script resource: %s" % script_path})
+					return
+				node.set_script(loaded)
+				_send_response({"success": true, "action": "attach", "node_path": node_path, "script_path": script_path})
+				return
 			var source: String = params.get("source", "")
 			if source.is_empty():
-				_send_response({"error": "source is required for attach"})
+				_send_response({"error": "Either script_path or source is required for attach"})
 				return
+			# Inline source compilation only works for GDScript at runtime.
 			var s: GDScript = GDScript.new()
 			s.source_code = source
 			var err: int = s.reload()

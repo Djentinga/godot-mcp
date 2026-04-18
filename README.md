@@ -540,13 +540,11 @@ The server listens on `127.0.0.1:9090` and accepts JSON commands over TCP when t
 
 ## Tool Filtering
 
-The server exposes ~150 tools by default. Operators can narrow the surface via
-environment variables or a JSON config file — useful for pure-C# projects that
-want to strip GDScript-only tools, or for agents that only need a subset.
+Restrict the exposed tool set via env vars or a JSON config.
 
-### JSON config file
+### Config file
 
-Point `GODOT_MCP_CONFIG` at a JSON file:
+`GODOT_MCP_CONFIG` points at a JSON file. All fields optional.
 
 ```json
 {
@@ -557,93 +555,59 @@ Point `GODOT_MCP_CONFIG` at a JSON file:
 }
 ```
 
-All four fields are optional. An absent field means "no filter on that axis".
+### Env vars
 
-### Environment-variable overrides
+`GODOT_MCP_ENABLED_TOOLS`, `GODOT_MCP_DISABLED_TOOLS`, `GODOT_MCP_ENABLED_TAGS`,
+`GODOT_MCP_DISABLED_TAGS` take comma-separated lists. Each env var replaces the
+corresponding JSON field (per-field, not merged).
 
-Any of `GODOT_MCP_ENABLED_TOOLS`, `GODOT_MCP_DISABLED_TOOLS`,
-`GODOT_MCP_ENABLED_TAGS`, `GODOT_MCP_DISABLED_TAGS` accepts a comma-separated
-list. When set, each env var **replaces the corresponding field** from the JSON
-file (per-field, not merged).
+### Filter rules
 
-### Filter semantics
+A tool passes when: it's in `enabledTools` (if set), it's not in
+`disabledTools`, at least one of its tags is in `enabledTags` (if set), and
+none of its tags are in `disabledTags`. Denylists win ties.
 
-A tool is exposed when all of these hold:
+Disabled tools return `MethodNotFound` and don't appear in `tools/list`.
 
-1. If `enabledTools` is set, the tool's name is in the list.
-2. The tool's name is not in `disabledTools`.
-3. If `enabledTags` is set, the tool has at least one tag from the list.
-4. None of the tool's tags appear in `disabledTags`.
+### Tags
 
-Denylist rules win over allowlist rules when both match.
-
-### Tag taxonomy
-
-Tools are tagged so filters can target whole subsystems. Most tools carry 1–3
-tags; a tool may appear under several categories (e.g. `game_physics_2d` is
-`runtime` + `2d` + `physics`).
-
-| Tag | What it covers |
-|-----|----------------|
-| `runtime` | Requires a running game connected over the TCP interaction server |
-| `headless` | Works without a running game (CLI/file-system operations) |
-| `editor` | Editor lifecycle (launch, version, run/stop) |
-| `project` | `project.godot`, autoloads, input map, export presets, plugins, layers, translations, CI/CD |
-| `scene` | `.tscn` reads/writes, node structure, scene changes, instancing |
-| `script` | Script attach/detach/create |
-| `gdscript-only` | Requires GDScript — strip these for pure-C# projects |
-| `file-io` | Raw file and directory ops |
-| `2d` | 2D-specific (tilemap, canvas, parallax, `Light2D`, `Shape2D`, `Path2D`) |
-| `3d` | 3D-specific (mesh, CSG, gridmap, `Light3D`, sky, navigation 3D, camera attributes) |
-| `physics` | Bodies, joints, raycasts, collision, 2D/3D physics |
-| `rendering` | Environment, viewport, debug draw, render settings, lights |
-| `shader` | Shader params, visual shader, shader resource management |
-| `animation` | Players, tweens, tree, particles, bone/skeleton |
+| Tag | Covers |
+|-----|--------|
+| `runtime` | Requires running game (TCP) |
+| `headless` | Works without running game |
+| `editor` | Launch, version, run/stop |
+| `project` | `project.godot`, autoloads, input map, exports, plugins, translations, CI |
+| `scene` | `.tscn` read/write, node structure, scene changes |
+| `script` | Attach/detach/create scripts |
+| `gdscript-only` | GDScript-only (currently just `game_eval`) |
+| `file-io` | File/directory ops |
+| `2d` | Tilemap, canvas, parallax, Light2D, Shape2D, Path2D |
+| `3d` | Mesh, CSG, gridmap, Light3D, sky, nav3D, camera attrs |
+| `physics` | Bodies, joints, raycasts, collision |
+| `rendering` | Environment, viewport, debug draw, lights |
+| `shader` | Shader params, visual shader |
+| `animation` | Players, tweens, tree, particles, bones |
 | `audio` | Buses, effects, playback, 3D audio |
-| `ui` | Control, text, popup, tree, item list, tabs, menu, range, theme |
-| `input` | Keyboard, mouse, gamepad, touch, input map/state/action |
-| `signal` | Connect/disconnect/emit/list/await signals |
+| `ui` | Control, text, popup, tree, tabs, menu, theme |
+| `input` | Keyboard, mouse, gamepad, touch, input map |
+| `signal` | Connect/disconnect/emit/list/await |
 | `networking` | HTTP, WebSocket, multiplayer, RPC |
 
-### Preset: pure-C# project
+### Presets
 
-To strip the GDScript-only tools (`game_eval`, `create_script`, `attach_script`,
-`game_script`) from a C# Godot project:
-
-```json
-{
-  "env": {
-    "GODOT_MCP_DISABLED_TAGS": "gdscript-only"
-  }
-}
-```
-
-### Preset: 2D-only project
-
-Drop every tool specific to 3D rendering/physics/navigation/audio:
+`create_script`, `attach_script`, and `game_script` accept `.cs` out of the
+box. Only `game_eval` is `gdscript-only` (runtime C# compile isn't supported).
 
 ```json
-{
-  "env": {
-    "GODOT_MCP_DISABLED_TAGS": "3d"
-  }
-}
+// Pure-C#: strip game_eval
+{ "env": { "GODOT_MCP_DISABLED_TAGS": "gdscript-only" } }
+
+// 2D-only
+{ "env": { "GODOT_MCP_DISABLED_TAGS": "3d" } }
+
+// Headless CI
+{ "env": { "GODOT_MCP_DISABLED_TAGS": "runtime" } }
 ```
-
-### Preset: headless automation / CI
-
-Keep only tools that don't need a running game:
-
-```json
-{
-  "env": {
-    "GODOT_MCP_DISABLED_TAGS": "runtime"
-  }
-}
-```
-
-Calling a disabled tool returns an MCP `MethodNotFound` error; it does not
-appear in `tools/list` responses.
 
 ## Architecture
 
