@@ -33,6 +33,7 @@ import {
   isGodot44OrLater,
   type OperationParams,
 } from './utils.js';
+import { ToolFilter, type ToolDef } from './tool-filter.js';
 
 // Check if debug mode is enabled
 const DEBUG_MODE: boolean = process.env.DEBUG === 'true';
@@ -85,6 +86,7 @@ class GodotServer {
   private interactionScriptPath: string;
   private validatedPaths: Map<string, boolean> = new Map();
   private strictPathValidation: boolean = false;
+  private toolFilter: ToolFilter;
   private gameConnection: GameConnection = {
     socket: null,
     connected: false,
@@ -131,6 +133,10 @@ class GodotServer {
     this.operationsScriptPath = join(__dirname, 'scripts', 'godot_operations.gd');
     this.interactionScriptPath = join(__dirname, 'scripts', 'mcp_interaction_server.gd');
     if (debugMode) console.error(`[DEBUG] Operations script path: ${this.operationsScriptPath}`);
+
+    // Load the tool filter from environment / config file. Bad config throws
+    // and the top-level entry point converts it into a non-zero exit.
+    this.toolFilter = ToolFilter.load();
 
     // Initialize the MCP server
     this.server = new Server(
@@ -769,11 +775,11 @@ class GodotServer {
    */
   private setupToolHandlers() {
     // Define available tools
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: [
+    const allTools: ToolDef[] = [
         {
           name: 'launch_editor',
           description: 'Launch Godot editor for a specific project',
+          tags: ['editor'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -788,6 +794,7 @@ class GodotServer {
         {
           name: 'run_project',
           description: 'Run the Godot project and capture output',
+          tags: ['editor', 'runtime'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -806,6 +813,7 @@ class GodotServer {
         {
           name: 'get_debug_output',
           description: 'Get the current debug output and errors',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {},
@@ -815,6 +823,7 @@ class GodotServer {
         {
           name: 'stop_project',
           description: 'Stop the currently running Godot project',
+          tags: ['editor', 'runtime'],
           inputSchema: {
             type: 'object',
             properties: {},
@@ -824,6 +833,7 @@ class GodotServer {
         {
           name: 'get_godot_version',
           description: 'Get the installed Godot version',
+          tags: ['editor'],
           inputSchema: {
             type: 'object',
             properties: {},
@@ -833,6 +843,7 @@ class GodotServer {
         {
           name: 'list_projects',
           description: 'List Godot projects in a directory',
+          tags: ['project'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -851,6 +862,7 @@ class GodotServer {
         {
           name: 'get_project_info',
           description: 'Retrieve metadata about a Godot project',
+          tags: ['project'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -865,6 +877,7 @@ class GodotServer {
         {
           name: 'create_scene',
           description: 'Create a new Godot scene file',
+          tags: ['scene', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -887,6 +900,7 @@ class GodotServer {
         {
           name: 'add_node',
           description: 'Add a node to an existing scene',
+          tags: ['scene', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -921,6 +935,7 @@ class GodotServer {
         {
           name: 'load_sprite',
           description: 'Load a sprite into a Sprite2D node',
+          tags: ['scene', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -947,6 +962,7 @@ class GodotServer {
         {
           name: 'export_mesh_library',
           description: 'Export a scene as a MeshLibrary resource',
+          tags: ['3d', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -976,6 +992,7 @@ class GodotServer {
         {
           name: 'save_scene',
           description: 'Save changes to a scene file',
+          tags: ['scene', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -998,6 +1015,7 @@ class GodotServer {
         {
           name: 'get_uid',
           description: 'Get the UID for a specific file in a Godot project (for Godot 4.4+)',
+          tags: ['headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1016,6 +1034,7 @@ class GodotServer {
         {
           name: 'update_project_uids',
           description: 'Update UID references by resaving resources (4.4+)',
+          tags: ['project', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1030,6 +1049,7 @@ class GodotServer {
         {
           name: 'game_screenshot',
           description: 'Screenshot the running game (returns base64 PNG)',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {},
@@ -1039,6 +1059,7 @@ class GodotServer {
         {
           name: 'game_click',
           description: 'Click at a position in the running Godot game window',
+          tags: ['runtime', 'input'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1061,6 +1082,7 @@ class GodotServer {
         {
           name: 'game_key_press',
           description: 'Send a key press or input action to the running game',
+          tags: ['runtime', 'input'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1083,6 +1105,7 @@ class GodotServer {
         {
           name: 'game_mouse_move',
           description: 'Move the mouse in the running Godot game',
+          tags: ['runtime', 'input'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1109,6 +1132,7 @@ class GodotServer {
         {
           name: 'game_get_ui',
           description: 'Get visible UI elements from the running game',
+          tags: ['runtime', 'ui'],
           inputSchema: {
             type: 'object',
             properties: {},
@@ -1118,6 +1142,7 @@ class GodotServer {
         {
           name: 'game_get_scene_tree',
           description: 'Get scene tree structure of the running game',
+          tags: ['runtime', 'scene'],
           inputSchema: {
             type: 'object',
             properties: {},
@@ -1127,6 +1152,7 @@ class GodotServer {
 {
           name: 'game_eval',
           description: 'Execute GDScript in the running game. Use "return" for values.',
+          tags: ['runtime', 'gdscript-only'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1141,6 +1167,7 @@ class GodotServer {
         {
           name: 'game_get_property',
           description: 'Get a property value from any node in the running game by its path',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1159,6 +1186,7 @@ class GodotServer {
         {
           name: 'game_set_property',
           description: 'Set a property on a node in the running game',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1184,6 +1212,7 @@ class GodotServer {
         {
           name: 'game_call_method',
           description: 'Call a method on any node in the running game with optional arguments',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1206,6 +1235,7 @@ class GodotServer {
         {
           name: 'game_get_node_info',
           description: 'Get node info: class, properties, signals, methods, children',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1220,6 +1250,7 @@ class GodotServer {
         {
           name: 'game_instantiate_scene',
           description: 'Load a PackedScene and add it as a child of a node in the running game',
+          tags: ['runtime', 'scene'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1238,6 +1269,7 @@ class GodotServer {
         {
           name: 'game_remove_node',
           description: 'Remove and free a node from the running game\'s scene tree',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1252,6 +1284,7 @@ class GodotServer {
         {
           name: 'game_change_scene',
           description: 'Switch to a different scene file in the running game',
+          tags: ['runtime', 'scene'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1266,6 +1299,7 @@ class GodotServer {
         {
           name: 'game_pause',
           description: 'Pause or unpause the running game',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1280,6 +1314,7 @@ class GodotServer {
         {
           name: 'game_performance',
           description: 'Get performance metrics (FPS, memory, draw calls)',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {},
@@ -1289,6 +1324,7 @@ class GodotServer {
         {
           name: 'game_wait',
           description: 'Wait N frames in the running game',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1303,6 +1339,7 @@ class GodotServer {
 {
           name: 'read_scene',
           description: 'Read scene file as JSON node tree (headless)',
+          tags: ['scene', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1321,6 +1358,7 @@ class GodotServer {
         {
           name: 'modify_scene_node',
           description: 'Modify node properties in a scene file (headless)',
+          tags: ['scene', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1347,6 +1385,7 @@ class GodotServer {
         {
           name: 'remove_scene_node',
           description: 'Remove a node from a scene file (headless)',
+          tags: ['scene', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1369,6 +1408,7 @@ class GodotServer {
 {
           name: 'read_project_settings',
           description: 'Read project.godot as structured JSON',
+          tags: ['project', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1383,6 +1423,7 @@ class GodotServer {
         {
           name: 'modify_project_settings',
           description: 'Modify a project.godot setting',
+          tags: ['project', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1409,6 +1450,7 @@ class GodotServer {
         {
           name: 'list_project_files',
           description: 'List project files, optionally filtered by extension',
+          tags: ['file-io', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1432,6 +1474,7 @@ class GodotServer {
 {
           name: 'game_connect_signal',
           description: 'Connect a signal from one node to a method on another node in the running game',
+          tags: ['runtime', 'signal'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1446,6 +1489,7 @@ class GodotServer {
         {
           name: 'game_disconnect_signal',
           description: 'Disconnect a signal connection in the running game',
+          tags: ['runtime', 'signal'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1460,6 +1504,7 @@ class GodotServer {
         {
           name: 'game_emit_signal',
           description: 'Emit a signal on a node in the running game, optionally with arguments',
+          tags: ['runtime', 'signal'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1473,6 +1518,7 @@ class GodotServer {
         {
           name: 'game_play_animation',
           description: 'Control an AnimationPlayer node: play, stop, pause, or list animations',
+          tags: ['runtime', 'animation'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1486,6 +1532,7 @@ class GodotServer {
         {
           name: 'game_tween_property',
           description: 'Tween a node property in the running game',
+          tags: ['runtime', 'animation'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1502,6 +1549,7 @@ class GodotServer {
         {
           name: 'game_get_nodes_in_group',
           description: 'Get all nodes belonging to a specific group in the running game',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1513,6 +1561,7 @@ class GodotServer {
         {
           name: 'game_find_nodes_by_class',
           description: 'Find all nodes of a specific class type in the running game',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1525,6 +1574,7 @@ class GodotServer {
         {
           name: 'game_reparent_node',
           description: 'Move a node to a new parent in the running game\'s scene tree',
+          tags: ['runtime', 'scene'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1538,6 +1588,7 @@ class GodotServer {
 {
           name: 'attach_script',
           description: 'Attach a GDScript to a scene node (headless)',
+          tags: ['script', 'gdscript-only', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1552,6 +1603,7 @@ class GodotServer {
         {
           name: 'create_resource',
           description: 'Create a .tres resource file (headless)',
+          tags: ['scene', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1567,6 +1619,7 @@ class GodotServer {
         {
           name: 'read_file',
           description: 'Read a text file from a Godot project',
+          tags: ['file-io'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1579,6 +1632,7 @@ class GodotServer {
         {
           name: 'write_file',
           description: 'Create or overwrite a text file in a Godot project',
+          tags: ['file-io'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1592,6 +1646,7 @@ class GodotServer {
         {
           name: 'delete_file',
           description: 'Delete a file from a Godot project',
+          tags: ['file-io'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1604,6 +1659,7 @@ class GodotServer {
         {
           name: 'create_directory',
           description: 'Create a directory inside a Godot project',
+          tags: ['file-io'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1617,6 +1673,7 @@ class GodotServer {
         {
           name: 'game_get_errors',
           description: 'Get new push_error/push_warning messages since last call',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {},
@@ -1626,6 +1683,7 @@ class GodotServer {
         {
           name: 'game_get_logs',
           description: 'Get new print output from the running game since last call',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {},
@@ -1636,6 +1694,7 @@ class GodotServer {
         {
           name: 'game_key_hold',
           description: 'Hold a key down without auto-releasing',
+          tags: ['runtime', 'input'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1648,6 +1707,7 @@ class GodotServer {
         {
           name: 'game_key_release',
           description: 'Release a previously held key',
+          tags: ['runtime', 'input'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1660,6 +1720,7 @@ class GodotServer {
         {
           name: 'game_scroll',
           description: 'Send mouse scroll wheel event at position',
+          tags: ['runtime', 'input'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1674,6 +1735,7 @@ class GodotServer {
         {
           name: 'game_mouse_drag',
           description: 'Drag mouse between two points over N frames',
+          tags: ['runtime', 'input'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1690,6 +1752,7 @@ class GodotServer {
         {
           name: 'game_gamepad',
           description: 'Send gamepad button or axis input event',
+          tags: ['runtime', 'input'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1705,6 +1768,7 @@ class GodotServer {
         {
           name: 'create_project',
           description: 'Create a new Godot project from scratch',
+          tags: ['project'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1717,6 +1781,7 @@ class GodotServer {
         {
           name: 'manage_autoloads',
           description: 'Add, remove, or list autoloads in a Godot project',
+          tags: ['project', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1731,6 +1796,7 @@ class GodotServer {
         {
           name: 'manage_input_map',
           description: 'Add, remove, or list input actions and bindings',
+          tags: ['project', 'input', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1746,6 +1812,7 @@ class GodotServer {
         {
           name: 'manage_export_presets',
           description: 'Create or modify export preset configuration',
+          tags: ['project', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1761,7 +1828,8 @@ class GodotServer {
         // Advanced runtime tools
         {
           name: 'game_get_camera',
-          description: 'Get active camera position, rotation, and size',
+          description: 'Get active camera position, rotation, and size (2D or 3D)',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {},
@@ -1770,7 +1838,8 @@ class GodotServer {
         },
         {
           name: 'game_set_camera',
-          description: 'Move or rotate the active camera',
+          description: 'Move or rotate the active camera (2D or 3D)',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1785,6 +1854,7 @@ class GodotServer {
         {
           name: 'game_raycast',
           description: 'Cast a ray and return collision results',
+          tags: ['runtime', 'physics'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1798,6 +1868,7 @@ class GodotServer {
         {
           name: 'game_get_audio',
           description: 'Get audio bus layout and playing streams',
+          tags: ['runtime', 'audio'],
           inputSchema: {
             type: 'object',
             properties: {},
@@ -1807,6 +1878,7 @@ class GodotServer {
         {
           name: 'game_spawn_node',
           description: 'Create a new node of any type at runtime',
+          tags: ['runtime', 'scene'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1822,6 +1894,7 @@ class GodotServer {
         {
           name: 'game_set_shader_param',
           description: 'Set a shader parameter on a node\'s material',
+          tags: ['runtime', 'shader'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1836,6 +1909,7 @@ class GodotServer {
         {
           name: 'game_audio_play',
           description: 'Play, stop, or pause an AudioStreamPlayer node',
+          tags: ['runtime', 'audio'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1853,6 +1927,7 @@ class GodotServer {
         {
           name: 'game_audio_bus',
           description: 'Set volume, mute, or solo on an audio bus',
+          tags: ['runtime', 'audio'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1867,6 +1942,7 @@ class GodotServer {
         {
           name: 'game_navigate_path',
           description: 'Query a navigation path between two points',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1880,6 +1956,7 @@ class GodotServer {
         {
           name: 'game_tilemap',
           description: 'Get or set cells in a TileMapLayer node',
+          tags: ['runtime', '2d'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1896,6 +1973,7 @@ class GodotServer {
         {
           name: 'game_add_collision',
           description: 'Add a collision shape to a physics body node',
+          tags: ['runtime', 'physics'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1912,6 +1990,7 @@ class GodotServer {
         {
           name: 'game_environment',
           description: 'Get or set environment and post-processing settings',
+          tags: ['runtime', 'rendering'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1942,6 +2021,7 @@ class GodotServer {
         {
           name: 'game_manage_group',
           description: 'Add or remove a node from a group, or list groups',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1955,6 +2035,7 @@ class GodotServer {
         {
           name: 'game_create_timer',
           description: 'Create a Timer node with configuration',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1970,6 +2051,7 @@ class GodotServer {
         {
           name: 'game_set_particles',
           description: 'Configure GPUParticles2D/3D node properties',
+          tags: ['runtime', 'animation'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -1989,6 +2071,7 @@ class GodotServer {
         {
           name: 'game_create_animation',
           description: 'Create an animation with tracks and keyframes',
+          tags: ['runtime', 'animation'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2005,6 +2088,7 @@ class GodotServer {
         {
           name: 'export_project',
           description: 'Export a Godot project using a preset',
+          tags: ['project', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2019,6 +2103,7 @@ class GodotServer {
         {
           name: 'game_serialize_state',
           description: 'Save or load node tree state as JSON',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2033,6 +2118,7 @@ class GodotServer {
         {
           name: 'game_physics_body',
           description: 'Configure physics body properties (mass, velocity, etc.)',
+          tags: ['runtime', 'physics'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2054,6 +2140,7 @@ class GodotServer {
         {
           name: 'game_create_joint',
           description: 'Create a physics joint between two bodies',
+          tags: ['runtime', 'physics'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2072,6 +2159,7 @@ class GodotServer {
         {
           name: 'game_bone_pose',
           description: 'Get or set bone poses on a Skeleton3D node',
+          tags: ['runtime', 'animation', '3d'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2089,6 +2177,7 @@ class GodotServer {
         {
           name: 'game_ui_theme',
           description: 'Apply theme overrides to a Control node',
+          tags: ['runtime', 'ui'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2101,6 +2190,7 @@ class GodotServer {
         {
           name: 'game_viewport',
           description: 'Create or configure a SubViewport node',
+          tags: ['runtime', 'rendering'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2119,6 +2209,7 @@ class GodotServer {
         {
           name: 'game_debug_draw',
           description: 'Draw debug lines, spheres, or boxes in 3D',
+          tags: ['runtime', 'rendering'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2138,6 +2229,7 @@ class GodotServer {
         {
           name: 'game_http_request',
           description: 'HTTP GET/POST/PUT/DELETE with headers and body',
+          tags: ['runtime', 'networking'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2153,6 +2245,7 @@ class GodotServer {
         {
           name: 'game_websocket',
           description: 'WebSocket client connect/disconnect/send messages',
+          tags: ['runtime', 'networking'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2166,6 +2259,7 @@ class GodotServer {
         {
           name: 'game_multiplayer',
           description: 'ENet multiplayer create server/client/disconnect',
+          tags: ['runtime', 'networking'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2180,6 +2274,7 @@ class GodotServer {
         {
           name: 'game_rpc',
           description: 'Call or configure RPC methods on nodes',
+          tags: ['runtime', 'networking'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2197,6 +2292,7 @@ class GodotServer {
         {
           name: 'game_touch',
           description: 'Simulate touch press/release/drag and gestures',
+          tags: ['runtime', 'input'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2214,6 +2310,7 @@ class GodotServer {
         {
           name: 'game_input_state',
           description: 'Query pressed keys, mouse position, connected pads',
+          tags: ['runtime', 'input'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2228,6 +2325,7 @@ class GodotServer {
         {
           name: 'game_input_action',
           description: 'Manage runtime InputMap actions and strength',
+          tags: ['runtime', 'input'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2242,6 +2340,7 @@ class GodotServer {
         {
           name: 'game_list_signals',
           description: 'List all signals on a node with connections',
+          tags: ['runtime', 'signal'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2253,6 +2352,7 @@ class GodotServer {
         {
           name: 'game_await_signal',
           description: 'Await a signal with timeout and return args',
+          tags: ['runtime', 'signal'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2266,6 +2366,7 @@ class GodotServer {
         {
           name: 'game_script',
           description: 'Attach, detach, or get source of node scripts',
+          tags: ['runtime', 'script', 'gdscript-only'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2280,6 +2381,7 @@ class GodotServer {
         {
           name: 'game_window',
           description: 'Get/set window size, fullscreen, title, position',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2298,6 +2400,7 @@ class GodotServer {
         {
           name: 'game_os_info',
           description: 'Get platform, locale, screen, adapter, memory info',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {},
@@ -2307,6 +2410,7 @@ class GodotServer {
         {
           name: 'game_time_scale',
           description: 'Get/set Engine.time_scale and timing info',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2319,6 +2423,7 @@ class GodotServer {
         {
           name: 'game_process_mode',
           description: 'Set node process mode (pausable/always/disabled)',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2331,6 +2436,7 @@ class GodotServer {
         {
           name: 'game_world_settings',
           description: 'Get/set gravity, physics FPS, and world settings',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2346,6 +2452,7 @@ class GodotServer {
         {
           name: 'game_csg',
           description: 'Create/configure CSG nodes with boolean operations',
+          tags: ['runtime', '3d'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2366,6 +2473,7 @@ class GodotServer {
         {
           name: 'game_multimesh',
           description: 'Create/configure MultiMeshInstance3D for instancing',
+          tags: ['runtime', '3d'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2384,6 +2492,7 @@ class GodotServer {
         {
           name: 'game_procedural_mesh',
           description: 'Generate meshes via ArrayMesh from vertex data',
+          tags: ['runtime', '3d'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2400,6 +2509,7 @@ class GodotServer {
         {
           name: 'game_light_3d',
           description: 'Create/configure 3D lights (directional/omni/spot)',
+          tags: ['runtime', '3d', 'rendering'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2420,6 +2530,7 @@ class GodotServer {
         {
           name: 'game_mesh_instance',
           description: 'Create MeshInstance3D with primitive meshes',
+          tags: ['runtime', '3d'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2437,6 +2548,7 @@ class GodotServer {
         {
           name: 'game_gridmap',
           description: 'GridMap set/get/clear cells and query used cells',
+          tags: ['runtime', '3d'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2454,6 +2566,7 @@ class GodotServer {
         {
           name: 'game_3d_effects',
           description: 'Create ReflectionProbe, Decal, or FogVolume',
+          tags: ['runtime', '3d', 'rendering'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2469,6 +2582,7 @@ class GodotServer {
         {
           name: 'game_gi',
           description: 'Create/configure VoxelGI or LightmapGI',
+          tags: ['runtime', '3d', 'rendering'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2483,6 +2597,7 @@ class GodotServer {
         {
           name: 'game_path_3d',
           description: 'Create Path3D/Curve3D and manage curve points',
+          tags: ['runtime', '3d'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2499,6 +2614,7 @@ class GodotServer {
         {
           name: 'game_sky',
           description: 'Create/configure Sky with procedural/physical sky',
+          tags: ['runtime', '3d', 'rendering'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2515,6 +2631,7 @@ class GodotServer {
         {
           name: 'game_camera_attributes',
           description: 'Configure DOF, exposure, auto-exposure on camera',
+          tags: ['runtime', '3d'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2532,6 +2649,7 @@ class GodotServer {
         {
           name: 'game_navigation_3d',
           description: 'Create/configure NavigationRegion3D and bake',
+          tags: ['runtime', '3d'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2549,6 +2667,7 @@ class GodotServer {
         {
           name: 'game_physics_3d',
           description: 'Area3D queries and point/shape intersection tests',
+          tags: ['runtime', '3d', 'physics'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2565,6 +2684,7 @@ class GodotServer {
         {
           name: 'game_canvas',
           description: 'Create/configure CanvasLayer and CanvasModulate',
+          tags: ['runtime', '2d'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2581,6 +2701,7 @@ class GodotServer {
         {
           name: 'game_canvas_draw',
           description: '2D drawing: line/rect/circle/polygon/text/clear',
+          tags: ['runtime', '2d'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2603,6 +2724,7 @@ class GodotServer {
         {
           name: 'game_light_2d',
           description: 'Create/configure 2D lights and light occluders',
+          tags: ['runtime', '2d', 'rendering'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2620,6 +2742,7 @@ class GodotServer {
         {
           name: 'game_parallax',
           description: 'Create/configure ParallaxBackground and layers',
+          tags: ['runtime', '2d'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2637,6 +2760,7 @@ class GodotServer {
         {
           name: 'game_shape_2d',
           description: 'Line2D/Polygon2D point manipulation',
+          tags: ['runtime', '2d'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2653,6 +2777,7 @@ class GodotServer {
         {
           name: 'game_path_2d',
           description: 'Path2D/Curve2D management and AnimatedSprite2D',
+          tags: ['runtime', '2d'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2669,6 +2794,7 @@ class GodotServer {
         {
           name: 'game_physics_2d',
           description: 'Area2D queries and 2D point/shape intersections',
+          tags: ['runtime', '2d', 'physics'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2684,6 +2810,7 @@ class GodotServer {
         {
           name: 'game_animation_tree',
           description: 'AnimationTree state machine travel and params',
+          tags: ['runtime', 'animation'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2699,6 +2826,7 @@ class GodotServer {
         {
           name: 'game_animation_control',
           description: 'AnimationPlayer seek/queue/speed/info control',
+          tags: ['runtime', 'animation'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2714,6 +2842,7 @@ class GodotServer {
         {
           name: 'game_skeleton_ik',
           description: 'SkeletonIK3D start/stop/set target position',
+          tags: ['runtime', 'animation', '3d'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2727,6 +2856,7 @@ class GodotServer {
         {
           name: 'game_audio_effect',
           description: 'Add/remove/configure audio bus effects',
+          tags: ['runtime', 'audio'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2742,6 +2872,7 @@ class GodotServer {
         {
           name: 'game_audio_bus_layout',
           description: 'Create/remove/reorder audio buses and routing',
+          tags: ['runtime', 'audio'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2756,6 +2887,7 @@ class GodotServer {
         {
           name: 'game_audio_spatial',
           description: 'Configure AudioStreamPlayer3D spatial properties',
+          tags: ['runtime', 'audio', '3d'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2773,6 +2905,7 @@ class GodotServer {
         {
           name: 'rename_file',
           description: 'Rename or move a file within the project',
+          tags: ['file-io'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2786,6 +2919,7 @@ class GodotServer {
         {
           name: 'manage_resource',
           description: 'Read or modify .tres/.res resource files',
+          tags: ['headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2800,6 +2934,7 @@ class GodotServer {
         {
           name: 'create_script',
           description: 'Create a GDScript file from a template',
+          tags: ['script', 'gdscript-only', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2816,6 +2951,7 @@ class GodotServer {
         {
           name: 'manage_scene_signals',
           description: 'List/add/remove signal connections in .tscn files',
+          tags: ['scene', 'signal', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2833,6 +2969,7 @@ class GodotServer {
         {
           name: 'manage_layers',
           description: 'List/set named layer definitions in project',
+          tags: ['project', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2848,6 +2985,7 @@ class GodotServer {
         {
           name: 'manage_plugins',
           description: 'List/enable/disable editor plugins',
+          tags: ['project', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2861,6 +2999,7 @@ class GodotServer {
         {
           name: 'manage_shader',
           description: 'Create or read .gdshader files',
+          tags: ['shader', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2876,6 +3015,7 @@ class GodotServer {
         {
           name: 'manage_theme_resource',
           description: 'Create/read/modify Theme .tres resources',
+          tags: ['ui', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2890,6 +3030,7 @@ class GodotServer {
         {
           name: 'set_main_scene',
           description: 'Set the main scene in project.godot',
+          tags: ['project', 'scene', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2902,6 +3043,7 @@ class GodotServer {
         {
           name: 'manage_scene_structure',
           description: 'Rename/duplicate/move nodes within .tscn scenes',
+          tags: ['scene', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2918,6 +3060,7 @@ class GodotServer {
         {
           name: 'manage_translations',
           description: 'List/add/remove translation files in project',
+          tags: ['project', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2931,6 +3074,7 @@ class GodotServer {
         {
           name: 'game_locale',
           description: 'Set/get locale and translate strings at runtime',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2945,6 +3089,7 @@ class GodotServer {
         {
           name: 'game_ui_control',
           description: 'Set focus, anchors, tooltip, mouse filter on Control',
+          tags: ['runtime', 'ui'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2961,6 +3106,7 @@ class GodotServer {
         {
           name: 'game_ui_text',
           description: 'LineEdit/TextEdit/RichTextLabel text operations',
+          tags: ['runtime', 'ui'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2977,6 +3123,7 @@ class GodotServer {
         {
           name: 'game_ui_popup',
           description: 'Show/hide/popup for Popup/Dialog/Window nodes',
+          tags: ['runtime', 'ui'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -2992,6 +3139,7 @@ class GodotServer {
         {
           name: 'game_ui_tree',
           description: 'Tree control: get/select/collapse/add/remove items',
+          tags: ['runtime', 'ui'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -3007,6 +3155,7 @@ class GodotServer {
         {
           name: 'game_ui_item_list',
           description: 'ItemList/OptionButton: get/select/add/remove items',
+          tags: ['runtime', 'ui'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -3021,6 +3170,7 @@ class GodotServer {
         {
           name: 'game_ui_tabs',
           description: 'TabContainer/TabBar: get/set current tab',
+          tags: ['runtime', 'ui'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -3035,6 +3185,7 @@ class GodotServer {
         {
           name: 'game_ui_menu',
           description: 'PopupMenu/MenuBar: add/remove/get menu items',
+          tags: ['runtime', 'ui'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -3051,6 +3202,7 @@ class GodotServer {
         {
           name: 'game_ui_range',
           description: 'ProgressBar/Slider/SpinBox/ColorPicker get/set',
+          tags: ['runtime', 'ui'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -3068,6 +3220,7 @@ class GodotServer {
         {
           name: 'game_render_settings',
           description: 'Get/set MSAA, FXAA, TAA, scaling mode/scale',
+          tags: ['runtime', 'rendering'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -3085,6 +3238,7 @@ class GodotServer {
         {
           name: 'game_resource',
           description: 'Runtime resource load, save, or preload',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -3100,6 +3254,7 @@ class GodotServer {
         {
           name: 'game_visual_shader',
           description: 'Create and edit VisualShader graphs: add/connect/disconnect nodes',
+          tags: ['runtime', 'shader'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -3120,6 +3275,7 @@ class GodotServer {
         {
           name: 'game_terrain',
           description: 'Create/modify terrain meshes from heightmap data',
+          tags: ['runtime', '3d'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -3143,6 +3299,7 @@ class GodotServer {
         {
           name: 'game_video',
           description: 'Video playback control: play, pause, stop, seek on VideoStreamPlayer',
+          tags: ['runtime'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -3162,6 +3319,7 @@ class GodotServer {
         {
           name: 'manage_ci_pipeline',
           description: 'Create/read GitHub Actions workflow for automated Godot exports',
+          tags: ['project', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -3176,6 +3334,7 @@ class GodotServer {
         {
           name: 'manage_docker_export',
           description: 'Create Dockerfile for headless Godot export',
+          tags: ['project', 'headless'],
           inputSchema: {
             type: 'object',
             properties: {
@@ -3188,11 +3347,25 @@ class GodotServer {
             required: ['projectPath', 'action'],
           },
         },
-      ],
+    ];
+    const enabledTools = this.toolFilter.filter(allTools);
+    if (DEBUG_MODE) {
+      console.error(
+        `[DEBUG] Tool filter: ${enabledTools.length}/${allTools.length} tools enabled`
+      );
+    }
+    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: enabledTools,
     }));
 
     // Handle tool calls
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+      if (!this.toolFilter.isEnabled(request.params.name)) {
+        throw new McpError(
+          ErrorCode.MethodNotFound,
+          `Tool '${request.params.name}' is disabled by config`
+        );
+      }
       this.logDebug(`Handling tool request: ${request.params.name}`);
       switch (request.params.name) {
         case 'launch_editor':
@@ -6680,9 +6853,15 @@ class GodotServer {
 }
 
 // Create and run the server
-const server = new GodotServer();
-server.run().catch((error: unknown) => {
+try {
+  const server = new GodotServer();
+  server.run().catch((error: unknown) => {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('Failed to run server:', errorMessage);
+    process.exit(1);
+  });
+} catch (error: unknown) {
   const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-  console.error('Failed to run server:', errorMessage);
+  console.error('Failed to initialize server:', errorMessage);
   process.exit(1);
-});
+}
