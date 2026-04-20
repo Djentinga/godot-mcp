@@ -874,6 +874,21 @@ class GodotServer {
           },
         },
         {
+          name: 'build_project',
+          description: 'Headless editor pass that builds C# solutions and regenerates .uid files',
+          tags: ['editor', 'csharp'],
+          inputSchema: {
+            type: 'object',
+            properties: {
+              projectPath: {
+                type: 'string',
+                description: 'Godot project path',
+              },
+            },
+            required: ['projectPath'],
+          },
+        },
+        {
           name: 'run_project',
           description: 'Run the Godot project and capture output',
           tags: ['editor', 'runtime'],
@@ -3452,6 +3467,8 @@ class GodotServer {
       switch (request.params.name) {
         case 'launch_editor':
           return await this.handleLaunchEditor(request.params.arguments);
+        case 'build_project':
+          return await this.handleBuildProject(request.params.arguments);
         case 'run_project':
           return await this.handleRunProject(request.params.arguments);
         case 'get_debug_output':
@@ -3845,6 +3862,66 @@ class GodotServer {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       return createErrorResponse(
         `Failed to launch Godot editor: ${errorMessage}`
+      );
+    }
+  }
+
+  /**
+   * Handle the build_project tool — headless editor run that builds C# solutions
+   * and (as a side effect of the editor startup) re-imports the project, which
+   * regenerates .uid sidecars for newly added scripts. Runs to completion and
+   * returns captured stdout/stderr.
+   */
+  private async handleBuildProject(args: any) {
+    args = normalizeParameters(args);
+    if (!args.projectPath) return createErrorResponse('Project path is required');
+    if (!validatePath(args.projectPath)) return createErrorResponse('Invalid project path');
+
+    try {
+      if (!this.godotPath) {
+        await this.detectGodotPath();
+        if (!this.godotPath) return createErrorResponse('Could not find a valid Godot executable path');
+      }
+
+      const projectFile = projectGodotFile(args.projectPath);
+      if (!existsSync(projectFile)) {
+        return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
+      }
+
+      // --build-solutions implies --editor and builds C# solutions via MSBuild.
+      // --quit-after 2 guarantees the editor exits after the build/import pass
+      // even if Godot's own "exit when done" behaviour changes across versions.
+      const cmdArgs = [
+        '--headless',
+        '--build-solutions',
+        '--quit-after', '2',
+        '--path', this.godotSpawnPath(args.projectPath),
+      ];
+
+      this.logDebug(`Building Godot project: ${this.godotPath} ${cmdArgs.join(' ')}`);
+      const { stdout, stderr } = await execFileAsync(this.godotPath!, cmdArgs, {
+        timeout: 300_000,
+        maxBuffer: 16 * 1024 * 1024,
+      });
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              message: 'Build completed',
+              stdout: stdout.split('\n'),
+              stderr: stderr.split('\n'),
+            }, null, 2),
+          },
+        ],
+      };
+    } catch (error: any) {
+      const stdout = typeof error?.stdout === 'string' ? error.stdout : '';
+      const stderr = typeof error?.stderr === 'string' ? error.stderr : '';
+      const msg = error instanceof Error ? error.message : 'Unknown error';
+      return createErrorResponse(
+        `Build failed: ${msg}\n--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}`
       );
     }
   }
