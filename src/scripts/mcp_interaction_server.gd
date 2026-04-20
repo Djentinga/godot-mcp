@@ -11,6 +11,10 @@ var _busy: bool = false
 var _busy_since: float = 0.0
 const PORT: int = 9090
 const BUSY_TIMEOUT: float = 30.0
+# Bumped whenever the RPC surface changes so the MCP server can detect stale
+# autoload copies (e.g. a project that registered an older version under a
+# custom res:// path that bypassed injection). Surfaced via get_pid.
+const VERSION: String = "1.4.0"
 var _key_map: Dictionary
 var _held_keys: Dictionary = {}
 
@@ -103,6 +107,17 @@ func _handle_command(json_str: String) -> void:
 	var params: Dictionary = data.get("params", {})
 
 	match command:
+		# Identity handshake — lets MCP pin the real spawned-game PID without
+		# any Windows-side process enumeration (which can't distinguish an
+		# editor and a game that both have the project path in their cmdline).
+		"get_pid":
+			_send_response({"pid": OS.get_process_id(), "version": VERSION})
+		"quit":
+			# Send ack first so the client sees the response before the socket
+			# tears down, then defer the actual quit to the next idle frame so
+			# the outbound write flushes.
+			_send_response({"success": true, "version": VERSION})
+			get_tree().call_deferred("quit")
 		# Async commands (use await)
 		"screenshot":
 			await _cmd_screenshot()

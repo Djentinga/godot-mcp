@@ -60,6 +60,10 @@ interface GodotProcess {
   process: any;
   output: string[];
   errors: string[];
+  // Windows-side PID when Godot.exe is invoked via WSL interop. The PID of
+  // `process` is a Linux-side relay — killing it does not reliably terminate
+  // the GUI Windows process, so we track the real PID separately for taskkill.
+  windowsPid?: number;
 }
 
 /**
@@ -489,7 +493,23 @@ class GodotServer {
           });
         });
 
-        // Successfully connected
+        // Successfully connected — handshake: ask the game to report its own
+        // PID so stop_project can taskkill exactly the right Windows process.
+        // Image-name matching is unsafe: the user's editor shares Godot.exe.
+        try {
+          const response = await this.sendGameCommand('get_pid', {}, 5000);
+          const reportedPid = Number(response?.pid);
+          if (Number.isFinite(reportedPid) && reportedPid > 0) {
+            if (this.activeProcess) {
+              this.activeProcess.windowsPid = reportedPid;
+              this.logDebug(`Game handshake reported Windows PID ${reportedPid}`);
+            }
+          } else {
+            this.logDebug(`Game handshake returned no usable PID: ${JSON.stringify(response)}`);
+          }
+        } catch (err) {
+          this.logDebug(`Game PID handshake failed: ${err instanceof Error ? err.message : err}`);
+        }
         return;
       } catch (err) {
         this.logDebug(`Connection attempt ${attempt}/${maxAttempts} failed, retrying in ${retryDelay}ms...`);
@@ -553,10 +573,50 @@ class GodotServer {
     }
     if (this.activeProcess) {
       this.logDebug('Killing active Godot process');
-      this.activeProcess.process.kill();
+      await this.killActiveProcess();
       this.activeProcess = null;
     }
     await this.server.close();
+  }
+
+  /**
+   * Terminate a specific Windows-side Godot PID via taskkill.exe. /T kills the
+   * process tree; /F forces it. Companion to the Node-side process.kill()
+   * because the WSL2 interop relay PID that Node holds is not the real Godot
+   * PID, so signalling the relay does not reliably terminate the GUI process.
+   */
+  private async killWindowsGodot(winPid: number): Promise<void> {
+    try {
+      await execFileAsync('taskkill.exe', ['/PID', String(winPid), '/T', '/F'], { timeout: 5000 });
+      this.logDebug(`taskkill succeeded for Windows PID ${winPid}`);
+    } catch (err) {
+      this.logDebug(`taskkill failed for PID ${winPid}: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  /**
+   * Kill the currently tracked Godot process. When we know the real Windows
+   * PID (from the game's handshake), taskkill.exe that PID so the GUI process
+   * actually dies. Then signal the Node-side relay so Node's own bookkeeping
+   * clears. Without a handshake PID we do NOT attempt any image-name-based
+   * discovery — that can match the user's long-running editor.
+   */
+  private async killActiveProcess(): Promise<void> {
+    if (!this.activeProcess) return;
+    const winPid = this.activeProcess.windowsPid;
+    if (winPid) {
+      await this.killWindowsGodot(winPid);
+    } else if (isWindowsGodotExe(this.godotPath) && process.platform === 'linux') {
+      this.logDebug(
+        'No handshake PID recorded for running game — cannot safely taskkill. ' +
+        'Falling back to relay-only kill; game may survive as orphan.'
+      );
+    }
+    try {
+      this.activeProcess.process.kill();
+    } catch (err) {
+      this.logDebug(`process.kill failed: ${err instanceof Error ? err.message : err}`);
+    }
   }
 
   private async gameCommand(
@@ -3825,7 +3885,8 @@ class GodotServer {
         if (this.gameConnection.projectPath) {
           this.removeInteractionServer(this.gameConnection.projectPath);
         }
-        this.activeProcess.process.kill();
+        await this.killActiveProcess();
+        this.activeProcess = null;
       }
 
       // Inject interaction server before launching
@@ -3879,7 +3940,10 @@ class GodotServer {
 
       this.activeProcess = { process, output, errors };
 
-      // Start async TCP connection to the interaction server (fire-and-forget)
+      // Start async TCP connection to the interaction server (fire-and-forget).
+      // The connection handshake also resolves the real Windows-side PID from
+      // the game itself (see connectToGame), which is what stop_project uses
+      // to taskkill the correct Godot.exe.
       this.connectToGame(args.projectPath).catch(err => {
         this.logDebug(`Failed to connect to game interaction server: ${err}`);
       });
@@ -3938,10 +4002,13 @@ class GodotServer {
     }
 
     this.logDebug('Stopping active Godot process');
-    this.disconnectFromGame();
-    this.activeProcess.process.kill();
+    // Capture windowsPid BEFORE disconnect — disconnect tears down the TCP
+    // socket; killActiveProcess needs the handshake PID to taskkill the right
+    // Godot.exe.
     const output = this.activeProcess.output;
     const errors = this.activeProcess.errors;
+    this.disconnectFromGame();
+    await this.killActiveProcess();
     this.activeProcess = null;
     this.lastErrorIndex = 0;
     this.lastLogIndex = 0;
