@@ -283,6 +283,136 @@ export function projectGodotFile(projectPath: string): string {
   return projectFilePath(projectPath, 'project.godot');
 }
 
+export function addGodotIniSectionLine(content: string, section: string, line: string, key: string): string {
+  const newline = detectNewline(content);
+  const parsed = splitGodotIniLines(content);
+  const lines = parsed.lines;
+  const sectionIndex = findGodotIniSection(lines, section);
+
+  if (sectionIndex !== -1) {
+    const sectionEnd = findGodotIniSectionEnd(lines, sectionIndex + 1);
+    for (let i = sectionIndex + 1; i < sectionEnd; i++) {
+      if (godotIniLineMatchesKey(lines[i], key)) {
+        return content;
+      }
+    }
+
+    let insertIndex = sectionIndex + 1;
+    while (insertIndex < lines.length && lines[insertIndex].trim() === '') {
+      lines.splice(insertIndex, 1);
+    }
+    lines.splice(insertIndex, 0, line);
+    return joinGodotIniLines(lines, newline, parsed.trailingNewline);
+  }
+
+  while (lines.length > 0 && lines[lines.length - 1].trim() === '') {
+    lines.pop();
+  }
+  if (lines.length > 0) {
+    lines.push('');
+  }
+  lines.push(`[${section}]`, line);
+  return joinGodotIniLines(lines, newline, true);
+}
+
+export function removeGodotIniSectionLine(content: string, section: string, key: string): string {
+  const newline = detectNewline(content);
+  const parsed = splitGodotIniLines(content);
+  const lines = parsed.lines;
+  const sectionIndex = findGodotIniSection(lines, section);
+  if (sectionIndex === -1) {
+    return content;
+  }
+
+  let changed = false;
+  let sectionEnd = findGodotIniSectionEnd(lines, sectionIndex + 1);
+  for (let i = sectionEnd - 1; i > sectionIndex; i--) {
+    if (godotIniLineMatchesKey(lines[i], key)) {
+      lines.splice(i, 1);
+      changed = true;
+    }
+  }
+  if (!changed) {
+    return content;
+  }
+
+  sectionEnd = findGodotIniSectionEnd(lines, sectionIndex + 1);
+  while (sectionIndex + 1 < sectionEnd && lines[sectionIndex + 1].trim() === '') {
+    lines.splice(sectionIndex + 1, 1);
+    sectionEnd = findGodotIniSectionEnd(lines, sectionIndex + 1);
+  }
+  while (sectionEnd - 1 > sectionIndex && lines[sectionEnd - 1].trim() === '') {
+    lines.splice(sectionEnd - 1, 1);
+    sectionEnd = findGodotIniSectionEnd(lines, sectionIndex + 1);
+  }
+
+  const hasRemainingContent = lines
+    .slice(sectionIndex + 1, sectionEnd)
+    .some(sectionLine => sectionLine.trim() !== '');
+  if (!hasRemainingContent) {
+    lines.splice(sectionIndex, sectionEnd - sectionIndex);
+    if (sectionIndex === lines.length && lines.length > 0 && lines[lines.length - 1].trim() === '') {
+      lines.pop();
+    } else if (
+      sectionIndex > 0 &&
+      sectionIndex < lines.length &&
+      lines[sectionIndex - 1].trim() === '' &&
+      lines[sectionIndex].trim() === ''
+    ) {
+      lines.splice(sectionIndex, 1);
+    }
+  }
+
+  return joinGodotIniLines(lines, newline, parsed.trailingNewline && lines.length > 0);
+}
+
+function splitGodotIniLines(content: string): { lines: string[]; trailingNewline: boolean } {
+  if (content.length === 0) {
+    return { lines: [], trailingNewline: false };
+  }
+
+  const trailingNewline = /\r?\n$/.test(content);
+  const normalized = content.replace(/\r\n/g, '\n');
+  const lines = normalized.split('\n');
+  if (trailingNewline) {
+    lines.pop();
+  }
+  return { lines, trailingNewline };
+}
+
+function joinGodotIniLines(lines: string[], newline: string, trailingNewline: boolean): string {
+  if (lines.length === 0) {
+    return '';
+  }
+  return `${lines.join(newline)}${trailingNewline ? newline : ''}`;
+}
+
+function detectNewline(content: string): string {
+  return content.includes('\r\n') ? '\r\n' : '\n';
+}
+
+function findGodotIniSection(lines: string[], section: string): number {
+  return lines.findIndex(line => line.trim() === `[${section}]`);
+}
+
+function findGodotIniSectionEnd(lines: string[], startIndex: number): number {
+  for (let i = startIndex; i < lines.length; i++) {
+    if (/^\s*\[[^\]]+\]\s*$/.test(lines[i])) {
+      return i;
+    }
+  }
+  return lines.length;
+}
+
+function godotIniLineMatchesKey(line: string, key: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith(';')) {
+    return false;
+  }
+  const match = /^([^=]+)\s*=/.exec(trimmed);
+  return match?.[1].trim() === key;
+}
+
 /**
  * Parse a Godot-style INI file (project.godot, export_presets.cfg, …) into a
  * `{ section: { key: value } }` map. Unlike a naive line-by-line parser this

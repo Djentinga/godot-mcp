@@ -13,6 +13,8 @@ import {
   projectGodotFile,
   projectFilePath,
   toWindowsAccessiblePath,
+  addGodotIniSectionLine,
+  removeGodotIniSectionLine,
   parseGodotIni,
 } from '../src/utils.js';
 
@@ -448,6 +450,62 @@ describe('toWindowsAccessiblePath', () => {
 });
 
 describe('parseGodotIni', () => {
+  describe('Godot INI section line helpers', () => {
+    const autoloadLine = 'McpInteractionServer="*res://mcp_interaction_server.gd"';
+
+    it('round-trips an injected autoload without leaving whitespace', () => {
+      const original = `[application]\nconfig/name="Game"\n`;
+      const injected = addGodotIniSectionLine(
+        original,
+        'autoload',
+        autoloadLine,
+        'McpInteractionServer'
+      );
+
+      expect(injected).toBe(
+        `[application]\n` +
+          `config/name="Game"\n` +
+          `\n` +
+          `[autoload]\n` +
+          `${autoloadLine}\n`
+      );
+      expect(removeGodotIniSectionLine(injected, 'autoload', 'McpInteractionServer')).toBe(original);
+    });
+
+    it('removes injected blank lines around an autoload entry when other entries remain', () => {
+      const content =
+        `[autoload]\n` +
+        `\n` +
+        `${autoloadLine}\n` +
+        `Globals="*res://globals.gd"\n`;
+
+      expect(removeGodotIniSectionLine(content, 'autoload', 'McpInteractionServer')).toBe(
+        `[autoload]\n` +
+          `Globals="*res://globals.gd"\n`
+      );
+    });
+
+    it('only removes matching keys from the target section', () => {
+      const content =
+        `[application]\n` +
+        `McpInteractionServer="not an autoload"\n` +
+        `\n` +
+        `[autoload]\n` +
+        `${autoloadLine}\n`;
+
+      expect(removeGodotIniSectionLine(content, 'autoload', 'McpInteractionServer')).toBe(
+        `[application]\n` +
+          `McpInteractionServer="not an autoload"\n`
+      );
+    });
+
+    it('does not duplicate an existing autoload key', () => {
+      const content = `[autoload]\n${autoloadLine}\n`;
+
+      expect(addGodotIniSectionLine(content, 'autoload', autoloadLine, 'McpInteractionServer')).toBe(content);
+    });
+  });
+
   it('parses a simple flat section', () => {
     const out = parseGodotIni(
       `[application]\n` +

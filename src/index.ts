@@ -30,6 +30,8 @@ import {
   convertCamelToSnakeCase,
   validatePath,
   createErrorResponse,
+  addGodotIniSectionLine,
+  removeGodotIniSectionLine,
   isGodot44OrLater,
   toWslProjectPath,
   toNativeProjectPath,
@@ -373,22 +375,20 @@ class GodotServer {
     // Add autoload entry to project.godot
     let content = readFileSync(projectFile, 'utf8');
 
-    // Check if already injected
-    if (content.includes(this.AUTOLOAD_NAME)) {
+    const autoloadLine = `${this.AUTOLOAD_NAME}="*res://mcp_interaction_server.gd"`;
+
+    const updatedContent = addGodotIniSectionLine(
+      content,
+      'autoload',
+      autoloadLine,
+      this.AUTOLOAD_NAME
+    );
+    if (updatedContent === content) {
       this.logDebug('Interaction server autoload already present');
       return;
     }
 
-    const autoloadLine = `${this.AUTOLOAD_NAME}="*res://mcp_interaction_server.gd"`;
-
-    if (content.includes('[autoload]')) {
-      // Add after existing [autoload] section header
-      content = content.replace('[autoload]', `[autoload]\n\n${autoloadLine}`);
-    } else {
-      // Add new [autoload] section at end
-      content += `\n[autoload]\n\n${autoloadLine}\n`;
-    }
-
+    content = updatedContent;
     writeFileSync(projectFile, content, 'utf8');
     this.logDebug(`Injected ${this.AUTOLOAD_NAME} autoload into project.godot`);
   }
@@ -403,9 +403,7 @@ class GodotServer {
     // Remove autoload line from project.godot
     if (existsSync(projectFile)) {
       let content = readFileSync(projectFile, 'utf8');
-      // Remove the autoload line (and any surrounding blank line)
-      const autoloadLine = `${this.AUTOLOAD_NAME}="*res://mcp_interaction_server.gd"`;
-      content = content.replace(new RegExp(`\\n?${autoloadLine.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n?`), '\n');
+      content = removeGodotIniSectionLine(content, 'autoload', this.AUTOLOAD_NAME);
       writeFileSync(projectFile, content, 'utf8');
       this.logDebug('Removed interaction server autoload from project.godot');
     }
@@ -5456,18 +5454,13 @@ class GodotServer {
         if (!args.name || !args.path)
           return createErrorResponse('name and path are required for add action.');
         const autoloadLine = `${args.name}="*${args.path}"`;
-        if (content.includes('[autoload]')) {
-          content = content.replace('[autoload]', `[autoload]\n\n${autoloadLine}`);
-        } else {
-          content += `\n[autoload]\n\n${autoloadLine}\n`;
-        }
+        content = addGodotIniSectionLine(content, 'autoload', autoloadLine, args.name);
         writeFileSync(projectFile, content, 'utf8');
         return { content: [{ type: 'text', text: `Autoload "${args.name}" added: ${args.path}` }] };
       } else if (args.action === 'remove') {
         if (!args.name)
           return createErrorResponse('name is required for remove action.');
-        const pattern = new RegExp(`\\n?${args.name}\\s*=.*\\n?`, 'g');
-        content = content.replace(pattern, '\n');
+        content = removeGodotIniSectionLine(content, 'autoload', args.name);
         writeFileSync(projectFile, content, 'utf8');
         return { content: [{ type: 'text', text: `Autoload "${args.name}" removed.` }] };
       }
