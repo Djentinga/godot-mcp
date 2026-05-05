@@ -3,7 +3,7 @@
  * Pure functions extracted for testability.
  */
 
-import { join } from 'node:path';
+import { isAbsolute, join, normalize } from 'node:path';
 
 export interface OperationParams {
   [key: string]: any;
@@ -208,7 +208,40 @@ export function validatePath(path: string): boolean {
   if (!path || path.includes('..')) {
     return false;
   }
+
   return true;
+}
+
+export function validateProjectPath(path: string): boolean {
+  if (!validatePath(path)) {
+    return false;
+  }
+
+  const scopedPath = normalizeScopedPath(path);
+  const allowedRoots = getAllowedProjectRoots();
+  if (!isAbsolute(scopedPath)) {
+    return allowedRoots.length === 0;
+  }
+
+  if (allowedRoots.length === 0) {
+    return true;
+  }
+
+  return allowedRoots.some(root => scopedPath === root || scopedPath.startsWith(`${root}/`));
+}
+
+function getAllowedProjectRoots(): string[] {
+  return (process.env.GODOT_MCP_PROJECT_ROOTS ?? '')
+    .split(',')
+    .map(root => root.trim())
+    .filter(Boolean)
+    .map(normalizeScopedPath);
+}
+
+function normalizeScopedPath(path: string): string {
+  if (!path) return '';
+  const wslPath = path.match(/^[A-Za-z]:[\\/]/) ? toWslProjectPath(path) : path;
+  return normalize(wslPath).replace(/\\/g, '/').replace(/\/+$/, '');
 }
 
 export function createErrorResponse(message: string): any {

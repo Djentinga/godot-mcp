@@ -1014,7 +1014,7 @@ describe('Handler source structure', () => {
 
   it('headlessOp validates projectPath and checks project.godot', () => {
     expect(sourceCode).toContain("if (!projectPath) return createErrorResponse('projectPath is required.");
-    expect(sourceCode).toContain("if (!validatePath(projectPath)) return createErrorResponse('Invalid path.");
+    expect(sourceCode).toContain("if (!validateProjectPath(projectPath)) return createErrorResponse('Invalid path.");
     expect(sourceCode).toContain("project.godot");
   });
 

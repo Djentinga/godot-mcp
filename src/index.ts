@@ -29,6 +29,7 @@ import {
   normalizeParameters,
   convertCamelToSnakeCase,
   validatePath,
+  validateProjectPath,
   createErrorResponse,
   addGodotIniSectionLine,
   removeGodotIniSectionLine,
@@ -644,7 +645,7 @@ class GodotServer {
     const { projectPath, params } = argsFn(args);
 
     if (!projectPath) return createErrorResponse('projectPath is required.');
-    if (!validatePath(projectPath)) return createErrorResponse('Invalid path.');
+    if (!validateProjectPath(projectPath)) return createErrorResponse('Invalid path.');
 
     const projectFile = projectGodotFile(projectPath);
     if (!existsSync(projectFile)) return createErrorResponse(`Not a valid Godot project: ${projectPath}`);
@@ -3814,7 +3815,7 @@ class GodotServer {
       );
     }
 
-    if (!validatePath(args.projectPath)) {
+    if (!validateProjectPath(args.projectPath)) {
       return createErrorResponse(
         'Invalid project path'
       );
@@ -3873,7 +3874,7 @@ class GodotServer {
   private async handleBuildProject(args: any) {
     args = normalizeParameters(args);
     if (!args.projectPath) return createErrorResponse('Project path is required');
-    if (!validatePath(args.projectPath)) return createErrorResponse('Invalid project path');
+    if (!validateProjectPath(args.projectPath)) return createErrorResponse('Invalid project path');
 
     try {
       if (!this.godotPath) {
@@ -3938,7 +3939,7 @@ class GodotServer {
       );
     }
 
-    if (!validatePath(args.projectPath)) {
+    if (!validateProjectPath(args.projectPath)) {
       return createErrorResponse(
         'Invalid project path'
       );
@@ -4265,7 +4266,7 @@ class GodotServer {
       );
     }
   
-    if (!validatePath(args.projectPath)) {
+    if (!validateProjectPath(args.projectPath)) {
       return createErrorResponse(
         'Invalid project path'
       );
@@ -4350,7 +4351,7 @@ class GodotServer {
       );
     }
 
-    if (!validatePath(args.projectPath) || !validatePath(args.scenePath)) {
+    if (!validateProjectPath(args.projectPath) || !validatePath(args.scenePath)) {
       return createErrorResponse(
         'Invalid path'
       );
@@ -4408,7 +4409,7 @@ class GodotServer {
       );
     }
 
-    if (!validatePath(args.projectPath) || !validatePath(args.scenePath)) {
+    if (!validateProjectPath(args.projectPath) || !validatePath(args.scenePath)) {
       return createErrorResponse(
         'Invalid path'
       );
@@ -4485,7 +4486,7 @@ class GodotServer {
     }
 
     if (
-      !validatePath(args.projectPath) ||
+      !validateProjectPath(args.projectPath) ||
       !validatePath(args.scenePath) ||
       !validatePath(args.nodePath) ||
       !validatePath(args.texturePath)
@@ -4565,7 +4566,7 @@ class GodotServer {
     }
 
     if (
-      !validatePath(args.projectPath) ||
+      !validateProjectPath(args.projectPath) ||
       !validatePath(args.scenePath) ||
       !validatePath(args.outputPath)
     ) {
@@ -4639,7 +4640,7 @@ class GodotServer {
       );
     }
 
-    if (!validatePath(args.projectPath) || !validatePath(args.scenePath)) {
+    if (!validateProjectPath(args.projectPath) || !validatePath(args.scenePath)) {
       return createErrorResponse(
         'Invalid path'
       );
@@ -4742,7 +4743,7 @@ class GodotServer {
       );
     }
 
-    if (!validatePath(args.projectPath) || !validatePath(args.filePath)) {
+    if (!validateProjectPath(args.projectPath) || !validatePath(args.filePath)) {
       return createErrorResponse(
         'Invalid path'
       );
@@ -4955,7 +4956,7 @@ class GodotServer {
       return createErrorResponse('projectPath and scenePath are required.');
     }
 
-    if (!validatePath(args.projectPath) || !validatePath(args.scenePath)) {
+    if (!validateProjectPath(args.projectPath) || !validatePath(args.scenePath)) {
       return createErrorResponse('Invalid path.');
     }
 
@@ -5035,7 +5036,7 @@ class GodotServer {
       return createErrorResponse('projectPath is required.');
     }
 
-    if (!validatePath(args.projectPath)) {
+    if (!validateProjectPath(args.projectPath)) {
       return createErrorResponse('Invalid path.');
     }
 
@@ -5064,7 +5065,7 @@ class GodotServer {
       return createErrorResponse('projectPath, section, key, and value are required.');
     }
 
-    if (!validatePath(args.projectPath)) {
+    if (!validateProjectPath(args.projectPath)) {
       return createErrorResponse('Invalid path.');
     }
 
@@ -5122,7 +5123,7 @@ class GodotServer {
       return createErrorResponse('projectPath is required.');
     }
 
-    if (!validatePath(args.projectPath)) {
+    if (!validateProjectPath(args.projectPath)) {
       return createErrorResponse('Invalid path.');
     }
 
@@ -5266,7 +5267,7 @@ class GodotServer {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.filePath)
       return createErrorResponse('projectPath and filePath are required.');
-    if (!validatePath(args.projectPath) || !validatePath(args.filePath))
+    if (!validateProjectPath(args.projectPath) || !validatePath(args.filePath))
       return createErrorResponse('Invalid path.');
     const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile))
@@ -5286,7 +5287,7 @@ class GodotServer {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.filePath || args.content === undefined)
       return createErrorResponse('projectPath, filePath, and content are required.');
-    if (!validatePath(args.projectPath) || !validatePath(args.filePath))
+    if (!validateProjectPath(args.projectPath) || !validatePath(args.filePath))
       return createErrorResponse('Invalid path.');
     const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile))
@@ -5308,7 +5309,7 @@ class GodotServer {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.filePath)
       return createErrorResponse('projectPath and filePath are required.');
-    if (!validatePath(args.projectPath) || !validatePath(args.filePath))
+    if (!validateProjectPath(args.projectPath) || !validatePath(args.filePath))
       return createErrorResponse('Invalid path.');
     const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile))
@@ -5328,7 +5329,7 @@ class GodotServer {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.directoryPath)
       return createErrorResponse('projectPath and directoryPath are required.');
-    if (!validatePath(args.projectPath) || !validatePath(args.directoryPath))
+    if (!validateProjectPath(args.projectPath) || !validatePath(args.directoryPath))
       return createErrorResponse('Invalid path.');
     const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile))
@@ -5411,7 +5412,7 @@ class GodotServer {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.projectName)
       return createErrorResponse('projectPath and projectName are required.');
-    if (!validatePath(args.projectPath))
+    if (!validateProjectPath(args.projectPath))
       return createErrorResponse('Invalid path.');
     try {
       const fsProjectPath = toWslProjectPath(args.projectPath);
@@ -5433,7 +5434,7 @@ class GodotServer {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.action)
       return createErrorResponse('projectPath and action are required.');
-    if (!validatePath(args.projectPath))
+    if (!validateProjectPath(args.projectPath))
       return createErrorResponse('Invalid path.');
     const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile))
@@ -5474,7 +5475,7 @@ class GodotServer {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.action)
       return createErrorResponse('projectPath and action are required.');
-    if (!validatePath(args.projectPath))
+    if (!validateProjectPath(args.projectPath))
       return createErrorResponse('Invalid path.');
     const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile))
@@ -5536,7 +5537,7 @@ class GodotServer {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.action)
       return createErrorResponse('projectPath and action are required.');
-    if (!validatePath(args.projectPath))
+    if (!validateProjectPath(args.projectPath))
       return createErrorResponse('Invalid path.');
     const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile))
@@ -5775,7 +5776,7 @@ class GodotServer {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.presetName || !args.outputPath)
       return createErrorResponse('projectPath, presetName, and outputPath are required.');
-    if (!validatePath(args.projectPath))
+    if (!validateProjectPath(args.projectPath))
       return createErrorResponse('Invalid project path.');
     const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile))
@@ -6392,7 +6393,7 @@ class GodotServer {
   private async handleRenameFile(args: any) {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.filePath || !args.newPath) return createErrorResponse('projectPath, filePath, and newPath are required.');
-    if (!validatePath(args.projectPath) || !validatePath(args.filePath) || !validatePath(args.newPath)) return createErrorResponse('Invalid path.');
+    if (!validateProjectPath(args.projectPath) || !validatePath(args.filePath) || !validatePath(args.newPath)) return createErrorResponse('Invalid path.');
     const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile)) return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     const srcFull = projectFilePath(args.projectPath, args.filePath);
@@ -6420,7 +6421,7 @@ class GodotServer {
   private async handleCreateScript(args: any) {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.scriptPath) return createErrorResponse('projectPath and scriptPath are required.');
-    if (!validatePath(args.projectPath) || !validatePath(args.scriptPath)) return createErrorResponse('Invalid path.');
+    if (!validateProjectPath(args.projectPath) || !validatePath(args.scriptPath)) return createErrorResponse('Invalid path.');
     const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile)) return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     try {
@@ -6468,7 +6469,7 @@ class GodotServer {
   private async handleManageLayers(args: any) {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.action) return createErrorResponse('projectPath and action are required.');
-    if (!validatePath(args.projectPath)) return createErrorResponse('Invalid path.');
+    if (!validateProjectPath(args.projectPath)) return createErrorResponse('Invalid path.');
     const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile)) return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     try {
@@ -6504,7 +6505,7 @@ class GodotServer {
   private async handleManagePlugins(args: any) {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.action) return createErrorResponse('projectPath and action are required.');
-    if (!validatePath(args.projectPath)) return createErrorResponse('Invalid path.');
+    if (!validateProjectPath(args.projectPath)) return createErrorResponse('Invalid path.');
     const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile)) return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     try {
@@ -6548,7 +6549,7 @@ class GodotServer {
   private async handleManageShader(args: any) {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.shaderPath || !args.action) return createErrorResponse('projectPath, shaderPath, and action are required.');
-    if (!validatePath(args.projectPath) || !validatePath(args.shaderPath)) return createErrorResponse('Invalid path.');
+    if (!validateProjectPath(args.projectPath) || !validatePath(args.shaderPath)) return createErrorResponse('Invalid path.');
     const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile)) return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     const fullPath = projectFilePath(args.projectPath, args.shaderPath);
@@ -6586,7 +6587,7 @@ class GodotServer {
   private async handleSetMainScene(args: any) {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.scenePath) return createErrorResponse('projectPath and scenePath are required.');
-    if (!validatePath(args.projectPath)) return createErrorResponse('Invalid path.');
+    if (!validateProjectPath(args.projectPath)) return createErrorResponse('Invalid path.');
     const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile)) return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     try {
@@ -6627,7 +6628,7 @@ class GodotServer {
   private async handleManageTranslations(args: any) {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.action) return createErrorResponse('projectPath and action are required.');
-    if (!validatePath(args.projectPath)) return createErrorResponse('Invalid path.');
+    if (!validateProjectPath(args.projectPath)) return createErrorResponse('Invalid path.');
     const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile)) return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     try {
@@ -6845,7 +6846,7 @@ class GodotServer {
   private async handleManageCiPipeline(args: any) {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.action) return createErrorResponse('projectPath and action are required.');
-    if (!validatePath(args.projectPath)) return createErrorResponse('Invalid path.');
+    if (!validateProjectPath(args.projectPath)) return createErrorResponse('Invalid path.');
     const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile)) return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     const workflowDir = projectFilePath(args.projectPath, '.github', 'workflows');
@@ -6873,7 +6874,7 @@ class GodotServer {
   private async handleManageDockerExport(args: any) {
     args = normalizeParameters(args || {});
     if (!args.projectPath || !args.action) return createErrorResponse('projectPath and action are required.');
-    if (!validatePath(args.projectPath)) return createErrorResponse('Invalid path.');
+    if (!validateProjectPath(args.projectPath)) return createErrorResponse('Invalid path.');
     const projectFile = projectGodotFile(args.projectPath);
     if (!existsSync(projectFile)) return createErrorResponse(`Not a valid Godot project: ${args.projectPath}`);
     const dockerfilePath = projectFilePath(args.projectPath, 'Dockerfile');
@@ -6909,7 +6910,7 @@ class GodotServer {
       );
     }
 
-    if (!validatePath(args.projectPath)) {
+    if (!validateProjectPath(args.projectPath)) {
       return createErrorResponse(
         'Invalid project path'
       );

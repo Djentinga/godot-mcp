@@ -5,6 +5,7 @@ import {
   normalizeParameters,
   convertCamelToSnakeCase,
   validatePath,
+  validateProjectPath,
   createErrorResponse,
   isGodot44OrLater,
   toWslProjectPath,
@@ -183,6 +184,32 @@ describe('validatePath', () => {
   it('returns false for null/undefined', () => {
     expect(validatePath(null as any)).toBe(false);
     expect(validatePath(undefined as any)).toBe(false);
+  });
+});
+
+describe('validateProjectPath', () => {
+  const originalRoots = process.env.GODOT_MCP_PROJECT_ROOTS;
+
+  afterEach(() => {
+    if (originalRoots === undefined) delete process.env.GODOT_MCP_PROJECT_ROOTS;
+    else process.env.GODOT_MCP_PROJECT_ROOTS = originalRoots;
+  });
+
+  it('allows any valid project path when no project roots are configured', () => {
+    delete process.env.GODOT_MCP_PROJECT_ROOTS;
+    expect(validateProjectPath('/home/user/project')).toBe(true);
+  });
+
+  it('allows only configured absolute project roots when configured', () => {
+    process.env.GODOT_MCP_PROJECT_ROOTS = '/mnt/c/Code/SpaceportArchitect/SpaceportArchitect';
+    expect(validateProjectPath('/mnt/c/Code/SpaceportArchitect/SpaceportArchitect')).toBe(true);
+    expect(validateProjectPath('/mnt/c/Code/SpaceportArchitect/SpaceportArchitect/Bootstrap')).toBe(true);
+    expect(validateProjectPath('/mnt/c/Code/OtherProject')).toBe(false);
+  });
+
+  it('rejects relative project paths when project roots are configured', () => {
+    process.env.GODOT_MCP_PROJECT_ROOTS = '/mnt/c/Code/SpaceportArchitect/SpaceportArchitect';
+    expect(validateProjectPath('Bootstrap/Game.tscn')).toBe(false);
   });
 });
 
