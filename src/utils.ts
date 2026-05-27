@@ -332,6 +332,41 @@ export function projectGodotFile(projectPath: string): string {
   return projectFilePath(projectPath, 'project.godot');
 }
 
+/**
+ * Extract the interaction-server port the running game printed to stdout.
+ * The autoload prints `MCP_INTERACTION_PORT=<n>` once it binds, so the MCP
+ * server can follow the game onto a fallback port instead of assuming the
+ * default. Returns the LAST marker seen (the most recent bind) or null.
+ */
+export function parseInteractionPort(text: string): number | null {
+  const re = /MCP_INTERACTION_PORT=(\d+)/g;
+  let match: RegExpExecArray | null;
+  let port: number | null = null;
+  while ((match = re.exec(text)) !== null) {
+    const n = Number(match[1]);
+    if (Number.isInteger(n) && n > 0 && n < 65536) {
+      port = n;
+    }
+  }
+  return port;
+}
+
+/**
+ * Append lines to a capture buffer, evicting the oldest lines once the buffer
+ * exceeds `cap`. Mutates `buf` in place and returns how many lines were dropped
+ * from the front, so callers tracking absolute read offsets can stay consistent
+ * after eviction. Bounds memory for long-running / chatty game processes.
+ */
+export function appendCappedLines(buf: string[], lines: string[], cap: number): number {
+  buf.push(...lines);
+  if (cap <= 0 || buf.length <= cap) {
+    return 0;
+  }
+  const dropped = buf.length - cap;
+  buf.splice(0, dropped);
+  return dropped;
+}
+
 export function addGodotIniSectionLine(content: string, section: string, line: string, key: string): string {
   const newline = detectNewline(content);
   const parsed = splitGodotIniLines(content);

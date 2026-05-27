@@ -41,6 +41,8 @@ import {
   projectFilePath,
   toWindowsAccessiblePath,
   parseGodotIni,
+  parseInteractionPort,
+  appendCappedLines,
   type OperationParams,
 } from './utils.js';
 import { ToolFilter, type ToolDef } from './tool-filter.js';
@@ -63,6 +65,12 @@ interface GodotProcess {
   process: any;
   output: string[];
   errors: string[];
+  // Count of capture lines evicted from the front of output/errors once the
+  // ring buffer overflows. Kept so incremental readers (game_get_logs /
+  // game_get_errors) can map their absolute read offset onto the truncated
+  // array instead of silently re-reading or skipping lines.
+  outputDropped: number;
+  errorsDropped: number;
   // Windows-side PID when Godot.exe is invoked via WSL interop. The PID of
   // `process` is a Linux-side relay — killing it does not reliably terminate
   // the GUI Windows process, so we track the real PID separately for taskkill.
@@ -82,12 +90,28 @@ interface GodotServerConfig {
 /**
  * Interface for a TCP connection to the running game
  */
+interface PendingGameCommand {
+  resolve: (value: any) => void;
+  reject: (reason: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+  command: string;
+}
+
 interface GameConnection {
   socket: Socket | null;
   connected: boolean;
   responseBuffer: string;
-  pendingResolve: ((value: any) => void) | null;
+  // In-flight commands keyed by request id. Each game command carries a unique
+  // id and the game echoes it back, so concurrent / pipelined commands no
+  // longer clobber a single shared resolver and stale responses are dropped.
+  pending: Map<number, PendingGameCommand>;
+  nextId: number;
+  // FIFO chain that serializes outbound commands so only one is in flight at a
+  // time — keeps us off the game's single-client busy guard under normal use.
+  queue: Promise<unknown>;
   projectPath: string | null;
+  // Actual bound port (the game may fall back past the default if it is taken).
+  port: number;
 }
 
 /**
@@ -106,13 +130,23 @@ class GodotServer {
     socket: null,
     connected: false,
     responseBuffer: '',
-    pendingResolve: null,
+    pending: new Map(),
+    nextId: 1,
+    queue: Promise.resolve(),
     projectPath: null,
+    port: 9090,
   };
   private lastErrorIndex: number = 0;
   private lastLogIndex: number = 0;
   private readonly INTERACTION_PORT = 9090;
   private readonly AUTOLOAD_NAME = 'McpInteractionServer';
+  // How long to keep retrying the initial connection. Generous enough to cover
+  // a cold first-import of a large project, which can delay the autoload bind.
+  private readonly CONNECT_TIMEOUT_MS = 30000;
+  private readonly CONNECT_RETRY_DELAY_MS = 250;
+  // Cap on captured stdout/stderr lines per run so a long-lived or chatty game
+  // can't grow these buffers without bound.
+  private readonly MAX_CAPTURED_LINES = 5000;
 
   constructor(config?: GodotServerConfig) {
     // Apply configuration if provided
@@ -424,76 +458,131 @@ class GodotServer {
   }
 
   /**
-   * Connect to the game's TCP interaction server with retries
+   * The game prints `MCP_INTERACTION_PORT=<n>` to stdout once it binds. Scan
+   * the captured output so we follow it onto a fallback port if the default
+   * was taken. Returns null until the marker appears.
+   */
+  private discoverInteractionPort(): number | null {
+    if (!this.activeProcess) return null;
+    const haystack =
+      this.activeProcess.output.join('\n') + '\n' + this.activeProcess.errors.join('\n');
+    return parseInteractionPort(haystack);
+  }
+
+  /**
+   * Reject every in-flight command with the given reason and clear their
+   * timers. Used whenever the socket dies so callers fail fast instead of
+   * hanging until their individual timeouts.
+   */
+  private rejectAllPending(reason: string): void {
+    for (const [, pending] of this.gameConnection.pending) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error(reason));
+    }
+    this.gameConnection.pending.clear();
+  }
+
+  /**
+   * Open a single socket to the interaction server and wire up framing,
+   * response routing (by request id), and teardown. Resolves once connected,
+   * rejects if the connect attempt errors.
+   */
+  private openGameSocket(port: number): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const socket = createConnection({ host: '127.0.0.1', port }, () => {
+        settled = true;
+        this.gameConnection.socket = socket;
+        this.gameConnection.connected = true;
+        this.gameConnection.port = port;
+        this.gameConnection.responseBuffer = '';
+        this.logDebug(`Connected to game interaction server on port ${port}`);
+        console.error(`[SERVER] Connected to game interaction server on port ${port}`);
+        resolve();
+      });
+
+      socket.on('data', (data: Buffer) => {
+        this.gameConnection.responseBuffer += data.toString();
+        // Newline-delimited JSON: process every complete line.
+        while (this.gameConnection.responseBuffer.includes('\n')) {
+          const newlinePos = this.gameConnection.responseBuffer.indexOf('\n');
+          const line = this.gameConnection.responseBuffer.substring(0, newlinePos).trim();
+          this.gameConnection.responseBuffer = this.gameConnection.responseBuffer.substring(newlinePos + 1);
+          if (line.length === 0) continue;
+          let parsed: any;
+          try {
+            parsed = JSON.parse(line);
+          } catch (e) {
+            // A non-JSON line on the wire (e.g. a stray game print) must not
+            // strand an in-flight command — just skip it.
+            this.logDebug(`Ignoring non-JSON game line: ${line}`);
+            continue;
+          }
+          // Route to the matching command by id. Unknown / late / duplicate
+          // ids are dropped so a force-reset or timed-out command can never
+          // deliver its stale response to a different caller.
+          const id = Number(parsed?.id);
+          const pending = Number.isFinite(id) ? this.gameConnection.pending.get(id) : undefined;
+          if (!pending) {
+            this.logDebug(`Dropping game response with no matching pending id: ${line}`);
+            continue;
+          }
+          clearTimeout(pending.timer);
+          this.gameConnection.pending.delete(id);
+          pending.resolve(parsed);
+        }
+      });
+
+      socket.on('close', () => {
+        this.logDebug('Game interaction connection closed');
+        this.gameConnection.connected = false;
+        this.gameConnection.socket = null;
+        this.rejectAllPending('Connection closed');
+        if (!settled) reject(new Error('Socket closed before connect'));
+      });
+
+      socket.on('error', (err: Error) => {
+        this.logDebug(`Game interaction socket error: ${err.message}`);
+        // Tear the connection down so the next command fails fast instead of
+        // writing into a dead socket and waiting for its timeout.
+        this.gameConnection.connected = false;
+        if (this.gameConnection.socket === socket) {
+          this.gameConnection.socket = null;
+        }
+        socket.destroy();
+        this.rejectAllPending(`Socket error: ${err.message}`);
+        if (!settled) {
+          settled = true;
+          reject(err);
+        }
+      });
+    });
+  }
+
+  /**
+   * Connect to the game's TCP interaction server, retrying until the deadline.
+   * No fixed startup sleep — we retry immediately and follow the game onto its
+   * advertised port, so a fast boot connects quickly and a slow cold-import
+   * still gets the full budget.
    */
   private async connectToGame(projectPath: string): Promise<void> {
     this.gameConnection.projectPath = projectPath;
+    const deadline = Date.now() + this.CONNECT_TIMEOUT_MS;
+    let attempt = 0;
 
-    // Initial delay to let the game start up
-    await new Promise(resolve => setTimeout(resolve, 2000));
-
-    const maxAttempts = 10;
-    const retryDelay = 500;
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    while (Date.now() < deadline) {
       if (!this.activeProcess) {
         this.logDebug('Game process no longer running, aborting connection');
         return;
       }
+      attempt++;
 
+      const port = this.discoverInteractionPort() ?? this.INTERACTION_PORT;
       try {
-        await new Promise<void>((resolve, reject) => {
-          const socket = createConnection({ host: '127.0.0.1', port: this.INTERACTION_PORT }, () => {
-            this.gameConnection.socket = socket;
-            this.gameConnection.connected = true;
-            this.gameConnection.responseBuffer = '';
-            this.logDebug(`Connected to game interaction server (attempt ${attempt})`);
-            console.error(`[SERVER] Connected to game interaction server on port ${this.INTERACTION_PORT}`);
+        await this.openGameSocket(port);
 
-            socket.on('data', (data: Buffer) => {
-              this.gameConnection.responseBuffer += data.toString();
-              // Process complete lines
-              while (this.gameConnection.responseBuffer.includes('\n')) {
-                const newlinePos = this.gameConnection.responseBuffer.indexOf('\n');
-                const line = this.gameConnection.responseBuffer.substring(0, newlinePos).trim();
-                this.gameConnection.responseBuffer = this.gameConnection.responseBuffer.substring(newlinePos + 1);
-                if (line.length > 0 && this.gameConnection.pendingResolve) {
-                  try {
-                    const parsed = JSON.parse(line);
-                    const resolver = this.gameConnection.pendingResolve;
-                    this.gameConnection.pendingResolve = null;
-                    resolver(parsed);
-                  } catch (e) {
-                    this.logDebug(`Failed to parse game response: ${line}`);
-                  }
-                }
-              }
-            });
-
-            socket.on('close', () => {
-              this.logDebug('Game interaction connection closed');
-              this.gameConnection.connected = false;
-              this.gameConnection.socket = null;
-              if (this.gameConnection.pendingResolve) {
-                this.gameConnection.pendingResolve({ error: 'Connection closed' });
-                this.gameConnection.pendingResolve = null;
-              }
-            });
-
-            socket.on('error', (err: Error) => {
-              this.logDebug(`Game interaction socket error: ${err.message}`);
-            });
-
-            resolve();
-          });
-
-          socket.on('error', (err: Error) => {
-            reject(err);
-          });
-        });
-
-        // Successfully connected — handshake: ask the game to report its own
-        // PID so stop_project can taskkill exactly the right Windows process.
+        // Connected — handshake: ask the game to report its own PID so
+        // stop_project can taskkill exactly the right Windows process.
         // Image-name matching is unsafe: the user's editor shares Godot.exe.
         try {
           const response = await this.sendGameCommand('get_pid', {}, 5000);
@@ -511,12 +600,12 @@ class GodotServer {
         }
         return;
       } catch (err) {
-        this.logDebug(`Connection attempt ${attempt}/${maxAttempts} failed, retrying in ${retryDelay}ms...`);
-        await new Promise(resolve => setTimeout(resolve, retryDelay));
+        this.logDebug(`Connection attempt ${attempt} on port ${port} failed, retrying in ${this.CONNECT_RETRY_DELAY_MS}ms...`);
+        await new Promise(resolve => setTimeout(resolve, this.CONNECT_RETRY_DELAY_MS));
       }
     }
 
-    console.error(`[SERVER] Failed to connect to game interaction server after ${maxAttempts} attempts`);
+    console.error(`[SERVER] Failed to connect to game interaction server after ${attempt} attempts`);
   }
 
   /**
@@ -529,34 +618,49 @@ class GodotServer {
     }
     this.gameConnection.connected = false;
     this.gameConnection.responseBuffer = '';
-    if (this.gameConnection.pendingResolve) {
-      this.gameConnection.pendingResolve({ error: 'Disconnected' });
-      this.gameConnection.pendingResolve = null;
-    }
+    this.rejectAllPending('Disconnected');
   }
 
   /**
-   * Send a command to the running game and wait for a response
+   * Send a command to the running game and wait for a response. Calls are
+   * serialized through a FIFO chain so only one command is in flight at a
+   * time, keeping us off the game's single-client busy guard.
    */
   private async sendGameCommand(command: string, params: Record<string, any> = {}, timeoutMs: number = 10000): Promise<any> {
+    const run = this.gameConnection.queue
+      .catch(() => undefined)
+      .then(() => this.sendGameCommandRaw(command, params, timeoutMs));
+    // Keep the chain alive regardless of this command's outcome.
+    this.gameConnection.queue = run.catch(() => undefined);
+    return run;
+  }
+
+  /**
+   * Write one command to the socket and await its id-matched response.
+   */
+  private sendGameCommandRaw(command: string, params: Record<string, any>, timeoutMs: number): Promise<any> {
     if (!this.gameConnection.connected || !this.gameConnection.socket) {
-      throw new Error('Not connected to game interaction server. Is the game running?');
+      return Promise.reject(new Error('Not connected to game interaction server. Is the game running?'));
     }
 
-    const payload = JSON.stringify({ command, params }) + '\n';
+    const id = this.gameConnection.nextId++;
+    const payload = JSON.stringify({ id, command, params }) + '\n';
 
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.gameConnection.pendingResolve = null;
+      const timer = setTimeout(() => {
+        this.gameConnection.pending.delete(id);
         reject(new Error(`Game command '${command}' timed out after ${timeoutMs / 1000}s`));
       }, timeoutMs);
 
-      this.gameConnection.pendingResolve = (response: any) => {
-        clearTimeout(timeout);
-        resolve(response);
-      };
+      this.gameConnection.pending.set(id, { resolve, reject, timer, command });
 
-      this.gameConnection.socket!.write(payload);
+      try {
+        this.gameConnection.socket!.write(payload);
+      } catch (err) {
+        clearTimeout(timer);
+        this.gameConnection.pending.delete(id);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
     });
   }
 
@@ -710,7 +814,12 @@ class GodotServer {
 
       this.logDebug(`Executing: ${this.godotPath} ${args.join(' ')}`);
 
-      const { stdout, stderr } = await execFileAsync(this.godotPath!, args);
+      // Bound the call: a hung headless Godot must not block forever, and a
+      // verbose run must not blow the default 1MB stdout buffer (ENOBUFS).
+      const { stdout, stderr } = await execFileAsync(this.godotPath!, args, {
+        timeout: 120000,
+        maxBuffer: 32 * 1024 * 1024,
+      });
 
       return { stdout: stdout ?? '', stderr: stderr ?? '' };
     } catch (error: unknown) {
@@ -3997,12 +4106,19 @@ class GodotServer {
 
       this.logDebug(`Running Godot project: ${args.projectPath}`);
       const process = spawn(this.godotPath!, cmdArgs, { stdio: 'pipe' });
-      const output: string[] = [];
-      const errors: string[] = [];
+      // Capture buffers live on the process record so the ring-buffer eviction
+      // count stays in sync with the incremental log/error readers.
+      const procRecord: GodotProcess = {
+        process,
+        output: [],
+        errors: [],
+        outputDropped: 0,
+        errorsDropped: 0,
+      };
 
       process.stdout?.on('data', (data: Buffer) => {
         const lines = data.toString().split('\n');
-        output.push(...lines);
+        procRecord.outputDropped += appendCappedLines(procRecord.output, lines, this.MAX_CAPTURED_LINES);
         lines.forEach((line: string) => {
           if (line.trim()) this.logDebug(`[Godot stdout] ${line}`);
         });
@@ -4010,7 +4126,7 @@ class GodotServer {
 
       process.stderr?.on('data', (data: Buffer) => {
         const lines = data.toString().split('\n');
-        errors.push(...lines);
+        procRecord.errorsDropped += appendCappedLines(procRecord.errors, lines, this.MAX_CAPTURED_LINES);
         lines.forEach((line: string) => {
           if (line.trim()) this.logDebug(`[Godot stderr] ${line}`);
         });
@@ -4035,7 +4151,7 @@ class GodotServer {
         }
       });
 
-      this.activeProcess = { process, output, errors };
+      this.activeProcess = procRecord;
 
       // Start async TCP connection to the interaction server (fire-and-forget).
       // The connection handshake also resolves the real Windows-side PID from
@@ -4079,6 +4195,8 @@ class GodotServer {
             {
               output: this.activeProcess.output,
               errors: this.activeProcess.errors,
+              outputDropped: this.activeProcess.outputDropped,
+              errorsDropped: this.activeProcess.errorsDropped,
             },
             null,
             2
@@ -5424,16 +5542,22 @@ class GodotServer {
   private async handleGameGetErrors() {
     if (!this.activeProcess)
       return createErrorResponse('No active Godot process. Use run_project first.');
-    const errors = this.activeProcess.errors.slice(this.lastErrorIndex);
-    this.lastErrorIndex = this.activeProcess.errors.length;
+    const proc = this.activeProcess;
+    // lastErrorIndex is an absolute offset into the logical stream; map it onto
+    // the (possibly evicted) ring buffer before slicing.
+    const startPos = Math.max(0, this.lastErrorIndex - proc.errorsDropped);
+    const errors = proc.errors.slice(startPos);
+    this.lastErrorIndex = proc.errorsDropped + proc.errors.length;
     return { content: [{ type: 'text', text: JSON.stringify({ count: errors.length, errors }, null, 2) }] };
   }
 
   private async handleGameGetLogs() {
     if (!this.activeProcess)
       return createErrorResponse('No active Godot process. Use run_project first.');
-    const logs = this.activeProcess.output.slice(this.lastLogIndex);
-    this.lastLogIndex = this.activeProcess.output.length;
+    const proc = this.activeProcess;
+    const startPos = Math.max(0, this.lastLogIndex - proc.outputDropped);
+    const logs = proc.output.slice(startPos);
+    this.lastLogIndex = proc.outputDropped + proc.output.length;
     return { content: [{ type: 'text', text: JSON.stringify({ count: logs.length, logs }, null, 2) }] };
   }
 

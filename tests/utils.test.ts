@@ -17,6 +17,8 @@ import {
   addGodotIniSectionLine,
   removeGodotIniSectionLine,
   parseGodotIni,
+  parseInteractionPort,
+  appendCappedLines,
 } from '../src/utils.js';
 
 describe('PARAMETER_MAPPINGS', () => {
@@ -473,6 +475,59 @@ describe('toWindowsAccessiblePath', () => {
     expect(toWindowsAccessiblePath('scripts/x.gd', 'C:/Godot/Godot.exe')).toBe(
       'scripts/x.gd'
     );
+  });
+});
+
+describe('parseInteractionPort', () => {
+  it('returns null when no marker present', () => {
+    expect(parseInteractionPort('Godot Engine v4.3\nready\n')).toBeNull();
+  });
+
+  it('extracts the port from the marker line', () => {
+    expect(parseInteractionPort('MCP_INTERACTION_PORT=9090\n')).toBe(9090);
+  });
+
+  it('extracts a fallback port embedded in surrounding logs', () => {
+    const text =
+      'McpInteractionServer: starting\n' +
+      'MCP_INTERACTION_PORT=9093\n' +
+      'McpInteractionServer: Listening on 127.0.0.1:9093\n';
+    expect(parseInteractionPort(text)).toBe(9093);
+  });
+
+  it('returns the last marker when several are present', () => {
+    expect(parseInteractionPort('MCP_INTERACTION_PORT=9090\nMCP_INTERACTION_PORT=9091\n')).toBe(9091);
+  });
+
+  it('ignores out-of-range port values', () => {
+    expect(parseInteractionPort('MCP_INTERACTION_PORT=70000\n')).toBeNull();
+    expect(parseInteractionPort('MCP_INTERACTION_PORT=0\n')).toBeNull();
+  });
+});
+
+describe('appendCappedLines', () => {
+  it('appends without dropping below the cap', () => {
+    const buf = ['a'];
+    expect(appendCappedLines(buf, ['b', 'c'], 5)).toBe(0);
+    expect(buf).toEqual(['a', 'b', 'c']);
+  });
+
+  it('evicts oldest lines and reports the dropped count', () => {
+    const buf = ['a', 'b', 'c'];
+    expect(appendCappedLines(buf, ['d', 'e'], 3)).toBe(2);
+    expect(buf).toEqual(['c', 'd', 'e']);
+  });
+
+  it('keeps only the newest lines when a single batch exceeds the cap', () => {
+    const buf: string[] = [];
+    expect(appendCappedLines(buf, ['a', 'b', 'c', 'd'], 2)).toBe(2);
+    expect(buf).toEqual(['c', 'd']);
+  });
+
+  it('treats a non-positive cap as unbounded', () => {
+    const buf = ['a'];
+    expect(appendCappedLines(buf, ['b', 'c'], 0)).toBe(0);
+    expect(buf).toEqual(['a', 'b', 'c']);
   });
 });
 

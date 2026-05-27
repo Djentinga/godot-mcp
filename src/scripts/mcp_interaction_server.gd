@@ -9,12 +9,19 @@ var _client: StreamPeerTCP
 var _buffer: String = ""
 var _busy: bool = false
 var _busy_since: float = 0.0
+# id of the command currently being processed, echoed back in its response so
+# the MCP server can match replies to requests and drop stale / late ones.
+var _current_id: Variant = null
+var _port: int = 0
 const PORT: int = 9090
+# Number of consecutive ports to try before giving up (9090..9099).
+const PORT_RANGE: int = 10
 const BUSY_TIMEOUT: float = 30.0
 # Bumped whenever the RPC surface changes so the MCP server can detect stale
 # autoload copies (e.g. a project that registered an older version under a
 # custom res:// path that bypassed injection). Surfaced via get_pid.
-const VERSION: String = "1.4.0"
+# 1.5.0: request-id echo + dynamic port fallback.
+const VERSION: String = "1.5.0"
 var _key_map: Dictionary
 var _held_keys: Dictionary = {}
 
@@ -23,24 +30,38 @@ func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	_init_key_map()
 	_server = TCPServer.new()
-	var err: int = _server.listen(PORT, "127.0.0.1")
-	if err != OK:
-		push_error("McpInteractionServer: Failed to listen on port %d, error: %d" % [PORT, err])
+	# Try the default port first, then a small range of fallbacks so a stale
+	# instance, a TIME_WAIT socket, or a second project can't lock us out.
+	var bound_port: int = -1
+	for candidate in range(PORT, PORT + PORT_RANGE):
+		if _server.listen(candidate, "127.0.0.1") == OK:
+			bound_port = candidate
+			break
+	if bound_port == -1:
+		push_error("McpInteractionServer: Failed to bind any port in %d-%d" % [PORT, PORT + PORT_RANGE - 1])
 		return
-	print("McpInteractionServer: Listening on 127.0.0.1:%d" % PORT)
+	_port = bound_port
+	# Machine-readable marker the MCP server parses from stdout so it connects
+	# to the actual bound port instead of assuming the default.
+	print("MCP_INTERACTION_PORT=%d" % bound_port)
+	print("McpInteractionServer: Listening on 127.0.0.1:%d" % bound_port)
 
 
 func _process(_delta: float) -> void:
 	if _server == null:
 		return
 
-	# Safety timeout: force-reset _busy if it's been stuck too long
+	# Safety timeout: force-reset _busy if it's been stuck too long (a command
+	# coroutine that never resumed). Clear _current_id too so any late response
+	# from that abandoned command echoes a null id and the MCP server drops it
+	# rather than mis-pairing it with a newer command.
 	if _busy and _busy_since > 0.0:
 		var elapsed: float = Time.get_ticks_msec() / 1000.0 - _busy_since
 		if elapsed > BUSY_TIMEOUT:
 			push_warning("McpInteractionServer: _busy flag stuck for %.1fs, force-resetting" % elapsed)
 			_busy = false
 			_busy_since = 0.0
+			_current_id = null
 
 	# Accept new connections
 	if _server.is_connection_available():
@@ -64,6 +85,7 @@ func _process(_delta: float) -> void:
 		_buffer = ""
 		_busy = false
 		_busy_since = 0.0
+		_current_id = null
 		return
 
 	if status != StreamPeerTCP.STATUS_CONNECTED:
@@ -86,14 +108,22 @@ func _process(_delta: float) -> void:
 
 
 func _handle_command(json_str: String) -> void:
-	if _busy:
-		_send_response_raw({"error": "Server busy processing another command. Try again."})
-		return
-	_busy = true
-	_busy_since = Time.get_ticks_msec() / 1000.0
-
 	var json: JSON = JSON.new()
 	var parse_err: int = json.parse(json_str)
+
+	# Parse the request id first so every response — including the busy
+	# rejection below — can echo the id of the command it answers.
+	var req_id: Variant = null
+	if parse_err == OK and json.data is Dictionary:
+		req_id = json.data.get("id", null)
+
+	# Reject overlapping commands without disturbing the in-flight command's id.
+	if _busy:
+		_send_response_raw({"id": req_id, "error": "Server busy processing another command. Try again."})
+		return
+
+	_current_id = req_id
+
 	if parse_err != OK:
 		_send_response({"error": "Invalid JSON: %s" % json.get_error_message()})
 		return
@@ -102,6 +132,9 @@ func _handle_command(json_str: String) -> void:
 	if not data is Dictionary:
 		_send_response({"error": "Expected JSON object"})
 		return
+
+	_busy = true
+	_busy_since = Time.get_ticks_msec() / 1000.0
 
 	var command: String = data.get("command", "")
 	var params: Dictionary = data.get("params", {})
@@ -346,12 +379,19 @@ func _send_response(data: Dictionary) -> void:
 	_busy = false
 	_busy_since = 0.0
 	_send_response_raw(data)
+	# Command finished; drop its id so a stray later send can't reuse it.
+	_current_id = null
 
 
 # Send response without clearing busy flag (used when rejecting during busy state)
 func _send_response_raw(data: Dictionary) -> void:
 	if _client == null:
 		return
+	# Echo the current command id unless the caller supplied an explicit one
+	# (e.g. the busy rejection, which answers the incoming command, not the
+	# in-flight one).
+	if not data.has("id"):
+		data["id"] = _current_id
 	var json_str: String = JSON.stringify(data) + "\n"
 	var bytes: PackedByteArray = json_str.to_utf8_buffer()
 	_client.put_data(bytes)
