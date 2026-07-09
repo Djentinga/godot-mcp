@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "godot-mcp": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/build/index.js"
+      ],
+      "env": {
+        "GODOT_PATH": "${GODOT_PATH:-C:/Godot/Godot.exe}",
+        "GODOT_MCP_DISABLED_TAGS": "3d,networking,gdscript-only",
+        "GODOT_MCP_ENABLED_TOOLS": "build_project,create_scene,delete_file,game_call_method,game_click,game_emit_signal,game_find_nodes_by_class,game_get_camera,game_get_errors,game_get_logs,game_get_node_info,game_get_nodes_in_group,game_get_property,game_get_scene_tree,game_get_ui,game_input_state,game_key_press,game_mouse_drag,game_mouse_move,game_pause,game_performance,game_screenshot,game_scroll,game_set_camera,game_set_property,game_set_shader_param,game_tilemap,game_wait,game_window,get_debug_output,get_godot_version,get_scene_warnings,get_uid,manage_input_map,modify_project_settings,modify_scene_node,read_file,read_project_settings,remove_scene_node,run_project,stop_project,write_file"
+      }
+    }
+  }
+}

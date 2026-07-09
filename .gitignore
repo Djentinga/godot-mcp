@@ -2,7 +2,8 @@
 node_modules/
 
 # Build output
-build/
+# build/ is committed: it ships the self-contained plugin bundle
+# (scripts/bundle.mjs) so marketplace installs run without npm install.
 dist/
 
 # Logs
