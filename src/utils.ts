@@ -3,7 +3,7 @@
  * Pure functions extracted for testability.
  */
 
-import { isAbsolute, join, normalize } from 'node:path';
+import { isAbsolute, normalize, posix, win32 } from 'node:path';
 
 export interface OperationParams {
   [key: string]: any;
@@ -324,7 +324,12 @@ export function isWindowsGodotExe(godotPath: string | null | undefined): boolean
  * script under the project, etc.
  */
 export function projectFilePath(projectPath: string, ...parts: string[]): string {
-  return join(toWslProjectPath(projectPath), ...parts);
+  // Pick the join semantics from process.platform (the same signal
+  // toWslProjectPath keys on) rather than the host OS: on linux/WSL a
+  // translated "/mnt/c/..." path must join with forward slashes even when the
+  // server happens to run under Windows, and vice versa.
+  const joinFor = process.platform === 'win32' ? win32.join : posix.join;
+  return joinFor(toWslProjectPath(projectPath), ...parts);
 }
 
 /** Backwards-compat alias pinned to project.godot. */
