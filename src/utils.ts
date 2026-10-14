@@ -372,6 +372,28 @@ export function appendCappedLines(buf: string[], lines: string[], cap: number): 
   return dropped;
 }
 
+/**
+ * Reduce a `--build-solutions` run to its error and warning lines. Godot's
+ * raw output is mostly ANSI-coloured `[ NN% ]` progress steps (~17KB a build),
+ * which an MCP client re-reads on every later turn. Drops colour codes, the
+ * MSBuild ` [project.csproj]` suffix and duplicates; caps at `cap` lines.
+ */
+export function summarizeBuildOutput(stdout: string, stderr: string, cap = 50): string[] {
+  const seen = new Set<string>();
+  for (const raw of `${stdout}\n${stderr}`.split('\n')) {
+    const line = raw
+      .replace(/\x1b\[[0-9;]*m/g, '')
+      .replace(/\s+\[[^\]]+\.csproj\]\s*$/, '')
+      .trim();
+    if (!line || /^\[\s*\d+%\s*\]|^\[ DONE \]/.test(line)) continue;
+    if (/\b(error|warning)\b|build failed/i.test(line)) seen.add(line);
+  }
+  const issues = [...seen];
+  return issues.length > cap
+    ? [...issues.slice(0, cap), `... ${issues.length - cap} more`]
+    : issues;
+}
+
 export function addGodotIniSectionLine(content: string, section: string, line: string, key: string): string {
   const newline = detectNewline(content);
   const parsed = splitGodotIniLines(content);

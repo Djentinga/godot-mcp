@@ -20969,6 +20969,17 @@ function appendCappedLines(buf, lines, cap) {
   buf.splice(0, dropped);
   return dropped;
 }
+function summarizeBuildOutput(stdout, stderr, cap = 50) {
+  const seen = /* @__PURE__ */ new Set();
+  for (const raw of `${stdout}
+${stderr}`.split("\n")) {
+    const line = raw.replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+\[[^\]]+\.csproj\]\s*$/, "").trim();
+    if (!line || /^\[\s*\d+%\s*\]|^\[ DONE \]/.test(line)) continue;
+    if (/\b(error|warning)\b|build failed/i.test(line)) seen.add(line);
+  }
+  const issues = [...seen];
+  return issues.length > cap ? [...issues.slice(0, cap), `... ${issues.length - cap} more`] : issues;
+}
 function addGodotIniSectionLine(content, section, line, key) {
   const newline = detectNewline(content);
   const parsed = splitGodotIniLines(content);
@@ -25073,8 +25084,7 @@ Output: ${stdout}` }] };
             type: "text",
             text: JSON.stringify({
               message: "Build completed",
-              stdout: stdout.split("\n"),
-              stderr: stderr.split("\n")
+              issues: summarizeBuildOutput(stdout, stderr)
             }, null, 2)
           }
         ]
@@ -25083,12 +25093,11 @@ Output: ${stdout}` }] };
       const stdout = typeof error2?.stdout === "string" ? error2.stdout : "";
       const stderr = typeof error2?.stderr === "string" ? error2.stderr : "";
       const msg = error2 instanceof Error ? error2.message : "Unknown error";
+      const issues = summarizeBuildOutput(stdout, stderr);
       return createErrorResponse(
         `Build failed: ${msg}
---- stdout ---
-${stdout}
---- stderr ---
-${stderr}`
+${issues.length ? issues.join("\n") : `--- stdout tail ---
+${stdout.slice(-4e3)}`}`
       );
     }
   }

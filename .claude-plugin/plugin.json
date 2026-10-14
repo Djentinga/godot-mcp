@@ -1,7 +1,7 @@
 {
   "name": "godot-mcp",
   "description": "MCP server for Godot 4.x engine control — scene, runtime, project, and debugging tools",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": {
     "name": "Joachim Arting"
   }

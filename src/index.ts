@@ -43,6 +43,7 @@ import {
   parseGodotIni,
   parseInteractionPort,
   appendCappedLines,
+  summarizeBuildOutput,
   type OperationParams,
 } from './utils.js';
 import { ToolFilter, type ToolDef } from './tool-filter.js';
@@ -4039,8 +4040,7 @@ class GodotServer {
             type: 'text',
             text: JSON.stringify({
               message: 'Build completed',
-              stdout: stdout.split('\n'),
-              stderr: stderr.split('\n'),
+              issues: summarizeBuildOutput(stdout, stderr),
             }, null, 2),
           },
         ],
@@ -4049,8 +4049,9 @@ class GodotServer {
       const stdout = typeof error?.stdout === 'string' ? error.stdout : '';
       const stderr = typeof error?.stderr === 'string' ? error.stderr : '';
       const msg = error instanceof Error ? error.message : 'Unknown error';
+      const issues = summarizeBuildOutput(stdout, stderr);
       return createErrorResponse(
-        `Build failed: ${msg}\n--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}`
+        `Build failed: ${msg}\n${issues.length ? issues.join('\n') : `--- stdout tail ---\n${stdout.slice(-4000)}`}`
       );
     }
   }

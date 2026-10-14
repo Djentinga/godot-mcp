@@ -19,6 +19,7 @@ import {
   parseGodotIni,
   parseInteractionPort,
   appendCappedLines,
+  summarizeBuildOutput,
 } from '../src/utils.js';
 
 describe('PARAMETER_MAPPINGS', () => {
@@ -502,6 +503,32 @@ describe('parseInteractionPort', () => {
   it('ignores out-of-range port values', () => {
     expect(parseInteractionPort('MCP_INTERACTION_PORT=70000\n')).toBeNull();
     expect(parseInteractionPort('MCP_INTERACTION_PORT=0\n')).toBeNull();
+  });
+});
+
+describe('summarizeBuildOutput', () => {
+  it('drops ANSI progress noise from a clean build', () => {
+    const stdout = [
+      'Godot Engine v4.7.2.stable.mono.official - https://godotengine.org\r',
+      '[   0% ] \x1b[90m\x1b[1mfirst_scan_filesystem\x1b[22m | Scanning file structure...\x1b[39m\x1b[0m\r',
+      '\x1b[92m[ DONE ]\x1b[39m \x1b[1mfirst_scan_filesystem\x1b[22m\r',
+    ].join('\n');
+    expect(summarizeBuildOutput(stdout, '')).toEqual([]);
+  });
+
+  it('keeps each compiler error once, without the project suffix', () => {
+    const error = 'C:\\p\\Foo.cs(12,5): error CS1002: ; expected';
+    const stdout = `${error} [C:\\p\\Game.csproj]\n${error} [C:\\p\\Game.csproj]\n`;
+    expect(summarizeBuildOutput(stdout, 'ERROR: Build FAILED.')).toEqual([error, 'ERROR: Build FAILED.']);
+  });
+
+  it('caps the list and counts the rest', () => {
+    const stdout = Array.from({ length: 5 }, (_, i) => `f.cs(${i},1): warning CS0168: unused`).join('\n');
+    expect(summarizeBuildOutput(stdout, '', 2)).toEqual([
+      'f.cs(0,1): warning CS0168: unused',
+      'f.cs(1,1): warning CS0168: unused',
+      '... 3 more',
+    ]);
   });
 });
 
